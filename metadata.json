@@ -1,0 +1,5 @@
+{
+  "name": "Kana Pop! Tetris",
+  "description": "A kawaii-styled educational game to master Hiragana and Katakana. Type the Romaji as characters fall to clear them, but don't let the stack reach the top!",
+  "requestFramePermissions": []
+}
