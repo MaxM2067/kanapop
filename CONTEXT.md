@@ -16,33 +16,37 @@ KANA POP! is an interactive, Tetris-style web game designed to help users master
     -   **Katakana**: Practice Katakana characters only.
     -   **Both**: Mixed mode.
 2.  **Difficulty Levels**: Slow, Normal, and Fast (adjusts drop speed).
+    -   **Adaptive Pacing**: Speed and spawn rate increase dynamically as your score grows.
 3.  **Gameplay Mechanics**:
-    -   Characters fall from the top of the board.
-    -   Characters stack upon reaching the bottom or other characters.
-    -   Typing the correct Romaji clears the character.
+    -   **Explosive Clearing**: Clearing a stacked block also destroys neighbors (Top, Left, Right).
+    -   **Score Penalty**: Lose 5 points if a block hits the stack/ground.
+    -   **Soul Hints**: Missed blocks release a floating "Soul" showing their Romaji reading.
     -   **Game Over**: When the stack reaches the top of the board.
-4.  **Audio Feedback**:
-    -   Uses the browser's native Web Speech API (`speechSynthesis`) to pronounce Japanese characters.
-    -   Automatically selects a Japanese voice (like `ja-JP`) if available on the system.
-5.  **Statistics**: Tracks correct/missed answers by character to identify weak points.
+4.  **Visuals & Audio**:
+    -   **Kawaii Aesthetic**: Pastel colors, "Sparkle/Flower" explosions, and bouncy animations.
+    -   **Audio Feedback**: Browser-native TTS (`speechSynthesis`) pronounces characters on clear.
+5.  **Statistics & History**:
+    -   **Detailed Stats**: Tracks % Accuracy (Unique Correct / Unique Total) and "Hardest Kana".
+    -   **History Panel**: Persistent sidebar (local storage) tracking date, score, and accuracy of past games.
 
 ## Project Structure
 ```
 /
-├── App.tsx             # Main Game Logic (State, Loop, Rendering, Input Handling)
+├── App.tsx               # Main Game Logic (State, Loop, Rendering, Input Handling)
 ├── components/
-│   └── StatsModal.tsx  # Post-game statistics display
-├── constants.ts        # Game constants (Speed, Kana data, Board dimensions)
-├── types.ts            # TypeScript interfaces (GameState, KanaCharacter, etc.)
-├── vite.config.ts      # Vite configuration
-└── package.json        # Dependencies and scripts
+│   ├── StatsModal.tsx    # Post-game statistics display
+│   └── HistoryPanel.tsx  # Sidebar showing past game history
+├── constants.ts          # Game constants (Speed, Kana data, Board dimensions)
+├── types.ts              # TypeScript interfaces (GameState, KanaCharacter, etc.)
+├── vite.config.ts        # Vite configuration
+└── package.json          # Dependencies and scripts
 ```
 
 ## Core Logic (`App.tsx`)
 -   **Game Loop**: Uses `requestAnimationFrame` for smooth animation updates.
--   **State Management**: React `useState` tracks active falling kana, stacked kana, score, and game status.
+-   **State Management**: React `useState` tracks active falling kana, stacked kana, score, history, and game status.
 -   **Input Handling**: Listens to user typing; matches input against active/stacked kana Romaji.
--   **Audio**: Uses `window.speechSynthesis` to speak kana characters.
+-   **Persistence**: Saves game history to `localStorage`.
 
 ## Setup & Development
 1.  **Install Dependencies**:
@@ -53,8 +57,10 @@ KANA POP! is an interactive, Tetris-style web game designed to help users master
     ```bash
     npm run dev
     ```
+3.  **Deploy**:
+    -   Push to GitHub: `git push`
+    -   Connect to Vercel for automatic deployments.
 
 ## Future Development Notes
--   **Audio Caching**: Currently, TTS might generate requests frequently. Caching audio blobs for repeated characters could improve performance and reduce API limits.
--   **High Scores**: Persisting high scores to local storage or a backend.
 -   **Mobile Support**: Optimize controls for touch devices (virtual keyboard or buttons).
+-   **Leaderboards**: Global backend-based leaderboards.

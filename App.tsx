@@ -5,6 +5,7 @@ import { HIRAGANA, KATAKANA, COLUMNS, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT, SPAW
 import { KanaMode, KanaCharacter, GameState, GameStats, Difficulty, GameHistoryItem } from './types';
 import StatsModal from './components/StatsModal';
 import HistoryPanel from './components/HistoryPanel';
+import VirtualKeyboard from './components/VirtualKeyboard';
 
 const App: React.FC = () => {
   const [gameState, setGameState] = useState<GameState>({
@@ -36,6 +37,35 @@ const App: React.FC = () => {
   const requestRef = useRef<number>();
   const lastTimeRef = useRef<number>();
   const spawnTimerRef = useRef<number>(0);
+
+  // Mobile & Scaling State
+  const [scale, setScale] = useState(1);
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const handleResize = () => {
+      const width = window.innerWidth;
+
+      // Determine if mobile based on width
+      const mobile = width < 768;
+      setIsMobile(mobile);
+
+      // Calculate scale for board
+      // Board width is ~480px + padding + borders. Let's say safe width is 520px.
+      // If screen is smaller than safe width, scale down.
+      if (width < 520) {
+        // Leave some margin
+        const newScale = (width - 32) / (BOARD_WIDTH + 12);
+        setScale(Math.min(1, newScale));
+      } else {
+        setScale(1);
+      }
+    };
+
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // Web Speech API for TTS
   const speakKana = (kana: string) => {
@@ -259,8 +289,8 @@ const App: React.FC = () => {
     };
   }, [gameState.isActive, gameState.isGameOver, update]);
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = e.target.value.toLowerCase().trim();
+  // Abstract input processing to reuse for both keyboard and virtual keyboard
+  const processInput = useCallback((val: string) => {
     setInputValue(val);
 
     const allVisible = [...gameState.activeKana, ...gameState.stackedKana];
@@ -301,6 +331,9 @@ const App: React.FC = () => {
         const charStat = prev.stats.byCharacter[match.char] || { correct: 0, missed: 0, char: match.char, romaji: match.romaji };
         charStat.correct += 1;
 
+        // Play sound
+        speakKana(match.char);
+
         return {
           ...prev,
           activeKana: filteredActive,
@@ -314,7 +347,7 @@ const App: React.FC = () => {
           }
         };
       });
-      setInputValue('');
+      setInputValue(''); // Reset input after match
 
       // Cleanup explosions after animation
       setTimeout(() => {
@@ -324,6 +357,20 @@ const App: React.FC = () => {
         }));
       }, 500);
     }
+  }, [gameState.activeKana, gameState.stackedKana, gameState.stats]); // Added dependencies
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value.toLowerCase().trim();
+    processInput(val);
+  };
+
+  const handleVirtualKeyPress = (key: string) => {
+    const newVal = inputValue + key;
+    processInput(newVal);
+  };
+
+  const handleVirtualBackspace = () => {
+    setInputValue(prev => prev.slice(0, -1));
   };
 
   const getKanaColor = (type: string) => {
@@ -331,11 +378,11 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen flex flex-row items-center justify-center p-4 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-pink-100 via-pink-50 to-white overflow-hidden">
+    <div className="min-h-screen flex flex-col md:flex-row items-center justify-center p-4 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-pink-100 via-pink-50 to-white overflow-hidden fixed inset-0">
 
       <HistoryPanel history={history} />
 
-      <div className="flex flex-col items-center">
+      <div className={`flex flex-col items-center transition-transform duration-300 origin-top`} style={{ transform: `scale(${scale})` }}>
         <div className="w-full max-w-[480px] mb-4 px-2">
           <div className="flex justify-between items-end mb-3">
             <div className="flex flex-col">
@@ -497,7 +544,8 @@ const App: React.FC = () => {
             onChange={handleInputChange}
             placeholder={gameState.isActive ? "Type romaji..." : "Press Start!"}
             disabled={!gameState.isActive}
-            autoFocus
+            readOnly={isMobile} // Custom Mobile keyboard logic
+            autoFocus={!isMobile}
             className="flex-1 bg-white border-4 border-pink-200 rounded-2xl px-6 py-4 text-2xl font-bold text-pink-600 placeholder-pink-200 focus:outline-none focus:border-pink-400 transition-colors shadow-inner"
           />
           <button
@@ -513,6 +561,12 @@ const App: React.FC = () => {
           <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-300" /> Katakana</span>
         </div>
       </div>
+
+      {isMobile && (
+        <div className="fixed bottom-0 left-0 w-full z-50">
+          <VirtualKeyboard onKeyPress={handleVirtualKeyPress} onBackspace={handleVirtualBackspace} />
+        </div>
+      )}
 
       {(gameState.isGameOver || showStats) && (
         <StatsModal
