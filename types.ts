@@ -19,9 +19,26 @@ export interface KanaCharacter {
   wordRomaji?: string; // Full romaji for input matching
   wordIndex?: number; // Index of character in the word (e.g. 0 for ね, 1 for こ)
   wordLength?: number; // Total length of the word (e.g. 2 for ねこ)
+  stackedAt?: number; // Counter value when block landed (for SRS confidence calc)
+  hintCount?: number; // Number of times user clicked for hint
 }
 
-export type WordMastery = Record<string, number>; // wordId -> count
+export type WordMastery = Record<string, number>; // wordId -> count (legacy)
+
+// SRS System Types
+export type ConfidenceLevel = 'confident' | 'hesitant' | 'difficult';
+
+export interface WordSRSData {
+  level: number;              // 0-6 (SRS level)
+  progress: number;           // 0.0 - 1.0 к следующему уровню
+  nextReviewSession: number;  // № сессии для следующего показа
+  confidentCount: number;     // угадал в воздухе
+  hesitantCount: number;      // немного полежало
+  difficultCount: number;     // долго лежало
+  lastAttemptSession: number; // Для расчёта интервалов
+}
+
+export type WordSRS = Record<string, WordSRSData>;
 
 export interface GameStats {
   correct: number;
@@ -41,6 +58,7 @@ export interface Explosion {
   id: string;
   x: number;
   y: number;
+  type?: 'normal' | 'confident'; // confident = golden star for air catches
 }
 
 export interface Soul {

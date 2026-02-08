@@ -3,7 +3,8 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 
 import { HIRAGANA, KATAKANA, COLUMNS, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT, SPAWN_INTERVAL_BASE, FALL_SPEED_BASE, SPEED_MULTIPLIERS } from './constants';
 import { WORDS } from './words';
-import { KanaMode, KanaCharacter, GameState, GameStats, Difficulty, GameHistoryItem, WordPopup, WordMastery, Explosion } from './types';
+import { KanaMode, KanaCharacter, GameState, GameStats, Difficulty, GameHistoryItem, WordPopup, WordMastery, WordSRS, WordSRSData, ConfidenceLevel, Explosion } from './types';
+import { SRS_INTERVALS, SRS_MAX_LEVEL, MASTERY_THRESHOLD, CONFIDENCE_THRESHOLD_DIFFICULT, CONFIDENCE_THRESHOLD_HESITANT, PROGRESS_CONFIDENT, PROGRESS_HESITANT, PROGRESS_DIFFICULT } from './srs';
 import StatsModal from './components/StatsModal';
 import HistoryPanel from './components/HistoryPanel';
 import VirtualKeyboard from './components/VirtualKeyboard';
@@ -34,14 +35,46 @@ const App: React.FC = () => {
     localStorage.setItem('kana_pop_history', JSON.stringify(history));
   }, [history]);
 
-  const [wordMastery, setWordMastery] = useState<WordMastery>(() => {
-    const saved = localStorage.getItem('kana_pop_mastery');
-    return saved ? JSON.parse(saved) : {};
+  // SRS State with migration from old mastery format
+  const [wordSRS, setWordSRS] = useState<WordSRS>(() => {
+    const saved = localStorage.getItem('kana_pop_srs');
+    if (saved) return JSON.parse(saved);
+
+    // Migrate from old mastery format if exists
+    const oldMastery = localStorage.getItem('kana_pop_mastery');
+    if (oldMastery) {
+      const old = JSON.parse(oldMastery) as WordMastery;
+      const migrated: WordSRS = {};
+      Object.entries(old).forEach(([wordId, count]) => {
+        migrated[wordId] = {
+          level: Math.min(SRS_MAX_LEVEL, Math.floor(count / 2)),
+          progress: 0,
+          nextReviewSession: 0,
+          confidentCount: count,
+          hesitantCount: 0,
+          difficultCount: 0,
+          lastAttemptSession: 0
+        };
+      });
+      return migrated;
+    }
+    return {};
+  });
+
+  // Session counter for SRS intervals
+  const [sessionNumber] = useState(() => {
+    const saved = parseInt(localStorage.getItem('kana_pop_session') || '0');
+    const newSession = saved + 1;
+    localStorage.setItem('kana_pop_session', String(newSession));
+    return newSession;
   });
 
   useEffect(() => {
-    localStorage.setItem('kana_pop_mastery', JSON.stringify(wordMastery));
-  }, [wordMastery]);
+    localStorage.setItem('kana_pop_srs', JSON.stringify(wordSRS));
+  }, [wordSRS]);
+
+  // Track blocks processed for confidence calculation
+  const blocksProcessedRef = useRef<number>(0);
 
   const [inputValue, setInputValue] = useState('');
   const [showStats, setShowStats] = useState(false);
@@ -49,6 +82,18 @@ const App: React.FC = () => {
   const requestRef = useRef<number>();
   const lastTimeRef = useRef<number>();
   const spawnTimerRef = useRef<number>(0);
+
+  // Hints state for click-to-hint (longer lasting than souls)
+  const [hints, setHints] = useState<{ id: string; x: number; y: number; text: string; createdAt: number }[]>([]);
+
+  // Clean up old hints (after 3 seconds)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      setHints(prev => prev.filter(h => now - h.createdAt < 3000));
+    }, 500);
+    return () => clearInterval(interval);
+  }, []);
 
   // Mobile & Scaling State
   const [scale, setScale] = useState(1);
@@ -196,7 +241,7 @@ const App: React.FC = () => {
         const wordsAtLevel = WORDS.filter(w => w.morae === m);
         if (wordsAtLevel.length === 0) continue;
 
-        const allMastered = wordsAtLevel.every(w => (wordMastery[w.id] || 0) >= 7);
+        const allMastered = wordsAtLevel.every(w => (wordSRS[w.id]?.level || 0) >= MASTERY_THRESHOLD);
         if (allMastered) {
           maxMorae = Math.max(maxMorae, m + 1);
         } else {
@@ -209,19 +254,24 @@ const App: React.FC = () => {
       let candidates: typeof WORDS = [];
 
       if (doReview) {
-        candidates = WORDS.filter(w => (wordMastery[w.id] || 0) >= 7);
+        // Pick words due for review OR fully mastered
+        candidates = WORDS.filter(w => {
+          const data = wordSRS[w.id];
+          if (!data) return false;
+          return data.level >= MASTERY_THRESHOLD && data.nextReviewSession <= sessionNumber;
+        });
       }
 
-      // If no review or no mastered words, build Learning Pool
+      // If no review or no mastered words due, build Learning Pool
       if (candidates.length === 0) {
         // Candidates: Words with morae <= maxMorae AND Not Mastered
-        const eligible = WORDS.filter(w => w.morae <= maxMorae && (wordMastery[w.id] || 0) < 7);
+        const eligible = WORDS.filter(w => w.morae <= maxMorae && (wordSRS[w.id]?.level || 0) < MASTERY_THRESHOLD);
 
         // Smart Rotation:
-        // 1. In Progress (0 < mastery < 7)
-        // 2. New (mastery == 0)
-        const inProgress = eligible.filter(w => (wordMastery[w.id] || 0) > 0);
-        const fresh = eligible.filter(w => (wordMastery[w.id] || 0) === 0);
+        // 1. In Progress (level > 0)
+        // 2. New (level == 0)
+        const inProgress = eligible.filter(w => (wordSRS[w.id]?.level || 0) > 0);
+        const fresh = eligible.filter(w => !wordSRS[w.id] || wordSRS[w.id].level === 0);
 
         // Pool Limit = 15
         // Fill with In Progress first, then Fresh
@@ -246,8 +296,9 @@ const App: React.FC = () => {
     const column = Math.floor(Math.random() * COLUMNS);
 
     const isWord = gameState.mode === 'words';
-    const masteryCount = (isWord && randomEntry.id) ? (wordMastery[randomEntry.id] || 0) : 0;
-    const showKanji = isWord && masteryCount >= 3 && randomEntry.kanji;
+    // Show kanji after level 2 (more familiar with the word)
+    const srsLevel = (isWord && randomEntry.id) ? (wordSRS[randomEntry.id]?.level || 0) : 0;
+    const showKanji = isWord && srsLevel >= 2 && randomEntry.kanji;
 
     // Determine text to display
     const textToDisplay = showKanji ? randomEntry.kanji : (isWord ? randomEntry.kana : randomEntry.char);
@@ -302,7 +353,7 @@ const App: React.FC = () => {
       ...prev,
       activeKana: [...prev.activeKana, ...newKanaList]
     }));
-  }, [gameState.mode, gameState.activeKana, wordMastery]);
+  }, [gameState.mode, gameState.activeKana, wordSRS, sessionNumber]);
 
   const update = useCallback((time: number) => {
     if (!lastTimeRef.current) {
@@ -334,8 +385,8 @@ const App: React.FC = () => {
 
       // Adjusted speed by difficulty multiplier
       const baseSpeed = FALL_SPEED_BASE * SPEED_MULTIPLIERS[prev.difficulty];
-      // Aggressive Difficulty Ramp: Speed up significantly faster
-      const currentSpeed = baseSpeed + (prev.score / 800);
+      // Score-based speed acceleration (disabled for words mode - already challenging enough)
+      const currentSpeed = prev.mode === 'words' ? baseSpeed : baseSpeed + (prev.score / 800);
 
       let nextSouls = [...prev.souls];
 
@@ -400,28 +451,23 @@ const App: React.FC = () => {
             minTargetY = Math.min(minTargetY, topOfStack - CELL_SIZE);
           });
 
-          // Freeze group
+          // Freeze group with stackedAt for SRS confidence tracking
           group.forEach(kana => {
-            nextStackedKana.push({ ...kana, y: minTargetY });
+            nextStackedKana.push({ ...kana, y: minTargetY, stackedAt: blocksProcessedRef.current });
 
-            // Penalty & Soul
+            // Penalty & Soul (only show auto-hint for kana, not words - words use click-to-hint)
             prev.score = Math.max(0, prev.score - 5);
 
-            // Better Hint Text
-            let soulText = kana.char;
-            if (kana.type === 'word' && kana.wordId) {
-              const w = WORDS.find(word => word.id === kana.wordId);
-              if (w) {
-                soulText = `${w.kanji} (${w.romaji})`;
-              }
+            // Auto-hint souls for kana only (words use click-to-hint system)
+            if (kana.type !== 'word') {
+              let soulText = kana.char;
+              nextSouls.push({
+                id: Math.random().toString(),
+                x: kana.x,
+                y: minTargetY,
+                text: soulText
+              });
             }
-
-            nextSouls.push({
-              id: Math.random().toString(),
-              x: kana.x,
-              y: minTargetY,
-              text: soulText
-            });
 
             if (kana.type === 'word' && kana.wordId) {
               // Update Word Stats (only once per group ideally, but here for every char)
@@ -589,12 +635,75 @@ const App: React.FC = () => {
           romaji: match.romaji
         });
 
-        // Update Mastery
+        // Update SRS with confidence calculation
         if (match.wordId) {
-          setWordMastery(prev => ({
-            ...prev,
-            [match.wordId!]: (prev[match.wordId!] || 0) + 1
-          }));
+          const isStacked = gameState.stackedKana.some(k => k.id === match.id);
+
+          // Calculate confidence based on stacked status, blocks processed, AND hint usage
+          let confidence: ConfidenceLevel = 'confident';
+
+          // Get hint count from the block (could be from activeKana or stackedKana)
+          const hintCount = match.hintCount || 0;
+
+          // Hint usage downgrades confidence: 1-2 hints → hesitant max, 3+ hints → difficult
+          if (hintCount >= 3) {
+            confidence = 'difficult';
+          } else if (hintCount >= 1) {
+            confidence = 'hesitant';
+          } else if (isStacked) {
+            // Original logic for no hints used
+            const blocksAfter = blocksProcessedRef.current - (match.stackedAt || 0);
+            if (blocksAfter >= CONFIDENCE_THRESHOLD_DIFFICULT) {
+              confidence = 'difficult';
+            } else if (blocksAfter >= CONFIDENCE_THRESHOLD_HESITANT) {
+              confidence = 'hesitant';
+            }
+          }
+
+          // Increment blocks processed counter
+          blocksProcessedRef.current += 1;
+
+          setWordSRS(prev => {
+            const current = prev[match.wordId!] || {
+              level: 0,
+              progress: 0,
+              nextReviewSession: 0,
+              confidentCount: 0,
+              hesitantCount: 0,
+              difficultCount: 0,
+              lastAttemptSession: sessionNumber
+            };
+
+            // Progress increments based on confidence
+            const progressGain =
+              confidence === 'confident' ? PROGRESS_CONFIDENT :
+                confidence === 'hesitant' ? PROGRESS_HESITANT : PROGRESS_DIFFICULT;
+
+            let newProgress = current.progress + progressGain;
+            let newLevel = current.level;
+
+            // Level up when progress >= 1.0
+            if (newProgress >= 1.0 && newLevel < SRS_MAX_LEVEL) {
+              newLevel += 1;
+              newProgress = 0;
+            }
+
+            // Calculate next review session based on level
+            const nextReview = sessionNumber + SRS_INTERVALS[newLevel];
+
+            return {
+              ...prev,
+              [match.wordId!]: {
+                level: newLevel,
+                progress: Math.min(1, newProgress),
+                nextReviewSession: nextReview,
+                confidentCount: current.confidentCount + (confidence === 'confident' ? 1 : 0),
+                hesitantCount: current.hesitantCount + (confidence === 'hesitant' ? 1 : 0),
+                difficultCount: current.difficultCount + (confidence === 'difficult' ? 1 : 0),
+                lastAttemptSession: sessionNumber
+              }
+            };
+          });
         }
       }
 
@@ -604,9 +713,12 @@ const App: React.FC = () => {
       if (match.wordGroupId) {
         // If part of a group, explode ALL matching group members
         const groupMembers = allVisible.filter(k => k.wordGroupId === match!.wordGroupId);
+        // Determine if this is an air catch (confident) or floor catch
+        const anyStacked = groupMembers.some(k => gameState.stackedKana.some(s => s.id === k.id));
+        const explosionType = anyStacked ? 'normal' : 'confident';
         groupMembers.forEach(k => {
           toRemoveIds.add(k.id);
-          groupExplosions.push({ id: Math.random().toString(), x: k.x, y: k.y });
+          groupExplosions.push({ id: Math.random().toString(), x: k.x, y: k.y, type: explosionType });
         });
         newExplosions = groupExplosions; // Replace the single explosion with group
       } else {
@@ -761,9 +873,64 @@ const App: React.FC = () => {
     setInputValue(prev => prev.slice(0, -1));
   };
 
+  // Click-to-hint handler for stacked word blocks
+  const showHint = (kana: KanaCharacter) => {
+    if (kana.type !== 'word' || !kana.wordId) return;
+
+    const word = WORDS.find(w => w.id === kana.wordId);
+    if (!word) return;
+
+    // Increment hint count on all blocks of this word group
+    setGameState(prev => ({
+      ...prev,
+      stackedKana: prev.stackedKana.map(k =>
+        k.wordGroupId === kana.wordGroupId
+          ? { ...k, hintCount: (k.hintCount || 0) + 1 }
+          : k
+      ),
+      activeKana: prev.activeKana.map(k =>
+        k.wordGroupId === kana.wordGroupId
+          ? { ...k, hintCount: (k.hintCount || 0) + 1 }
+          : k
+      )
+    }));
+
+    // Show hint popup
+    setHints(prev => [...prev, {
+      id: Math.random().toString(),
+      x: kana.x,
+      y: kana.y,
+      text: `${word.kanji} (${word.romaji}) - ${word.en}`,
+      createdAt: Date.now()
+    }]);
+  };
+
   const getKanaColor = (type: string) => {
     if (type === 'word') return 'bg-purple-300 text-purple-900 border-purple-400 font-bold';
     return type === 'hiragana' ? 'bg-pink-300 text-pink-900 border-pink-400 text-3xl' : 'bg-blue-300 text-blue-900 border-blue-400 text-3xl';
+  };
+
+  // Confidence-based color for stacked blocks
+  const getStackedBlockColor = (kana: KanaCharacter) => {
+    // Only apply to words with stackedAt tracking
+    if (kana.type !== 'word' || kana.stackedAt === undefined) {
+      return getKanaColor(kana.type) + ' grayscale-[0.3]';
+    }
+
+    const blocksAfter = blocksProcessedRef.current - kana.stackedAt;
+
+    if (blocksAfter >= CONFIDENCE_THRESHOLD_DIFFICULT) {
+      // Difficult - gray
+      return 'bg-gray-400 text-gray-700 border-gray-500 font-bold';
+    } else if (blocksAfter >= 2) {
+      // Fading - faded purple
+      return 'bg-purple-200 text-purple-600 border-purple-300 font-bold opacity-70';
+    } else if (blocksAfter >= CONFIDENCE_THRESHOLD_HESITANT) {
+      // Hesitant start - lighter purple
+      return 'bg-purple-200 text-purple-700 border-purple-300 font-bold';
+    }
+    // Just landed - normal
+    return 'bg-purple-300 text-purple-900 border-purple-400 font-bold';
   };
 
   const getKanaStyle = (kana: KanaCharacter) => {
@@ -923,8 +1090,9 @@ const App: React.FC = () => {
               {gameState.stackedKana.map(kana => (
                 <div
                   key={kana.id}
-                  className={`absolute flex items-center justify-center font-bold rounded-xl border-b-4 ${getKanaColor(kana.type)} japanese-font grayscale-[0.3]`}
+                  className={`absolute flex items-center justify-center rounded-xl border-b-4 ${getStackedBlockColor(kana)} japanese-font ${kana.type === 'word' ? 'cursor-pointer hover:ring-2 hover:ring-yellow-400' : ''}`}
                   style={getKanaStyle(kana)}
+                  onClick={() => kana.type === 'word' && showHint(kana)}
                 >
                   {kana.char}
                 </div>
@@ -969,9 +1137,19 @@ const App: React.FC = () => {
                   }}
                 >
                   <div className="relative w-full h-full animate-ping">
-                    <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-2xl">✨</span>
-                    <span className="absolute top-0 left-1/4 text-xl">🌸</span>
-                    <span className="absolute bottom-0 right-1/4 text-xl">🌸</span>
+                    {exp.type === 'confident' ? (
+                      <>
+                        <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-3xl">⭐</span>
+                        <span className="absolute top-0 left-1/4 text-xl">✨</span>
+                        <span className="absolute bottom-0 right-1/4 text-xl">✨</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-2xl">✨</span>
+                        <span className="absolute top-0 left-1/4 text-xl">🌸</span>
+                        <span className="absolute bottom-0 right-1/4 text-xl">🌸</span>
+                      </>
+                    )}
                   </div>
                 </div>
               ))}
@@ -989,6 +1167,22 @@ const App: React.FC = () => {
                   }}
                 >
                   <span className="bg-white/80 px-2 rounded-md shadow-sm">{soul.text}</span>
+                </div>
+              ))}
+
+              {/* Click-to-hint popups - brighter and longer lasting */}
+              {hints.map(hint => (
+                <div
+                  key={hint.id}
+                  className="absolute flex items-center justify-center font-bold text-purple-900 pointer-events-none animate-pulse whitespace-nowrap z-30"
+                  style={{
+                    left: hint.x - 40,
+                    top: hint.y - 50,
+                  }}
+                >
+                  <span className="bg-yellow-200 px-4 py-2 rounded-xl shadow-lg border-2 border-yellow-400 text-sm">
+                    {hint.text}
+                  </span>
                 </div>
               ))}
 
@@ -1060,7 +1254,7 @@ const App: React.FC = () => {
         <StatsModal
           stats={gameState.stats}
           score={gameState.score}
-          wordMastery={wordMastery}
+          wordSRS={wordSRS}
           onClose={() => setShowStats(false)}
           onRestart={() => startGame(gameState.mode, gameState.difficulty)}
         />

@@ -1,17 +1,18 @@
 
 import React from 'react';
-import { GameStats, WordMastery } from '../types';
+import { GameStats, WordSRS } from '../types';
+import { MASTERY_THRESHOLD } from '../srs';
 import { WORDS } from '../words';
 
 interface StatsModalProps {
   stats: GameStats;
   score: number;
-  wordMastery?: WordMastery;
+  wordSRS?: WordSRS;
   onClose: () => void;
   onRestart: () => void;
 }
 
-const StatsModal: React.FC<StatsModalProps> = ({ stats, score, wordMastery, onClose, onRestart }) => {
+const StatsModal: React.FC<StatsModalProps> = ({ stats, score, wordSRS, onClose, onRestart }) => {
   // Calculate Accuracy: (Unique Kana/Words Correctly Guessed / Total Unique Encountered) * 100
   const charStats = Object.values(stats.byCharacter).map((s: any) => ({
     ...s,
@@ -42,9 +43,9 @@ const StatsModal: React.FC<StatsModalProps> = ({ stats, score, wordMastery, onCl
     .sort((a, b) => b.missed - a.missed)
     .slice(0, 5);
 
-  const masteredWords = wordMastery
-    ? Object.entries(wordMastery)
-      .filter(([_, count]: [string, any]) => (count as number) >= 7)
+  const masteredWords = wordSRS
+    ? Object.entries(wordSRS)
+      .filter(([_, data]) => (data as { level: number }).level >= MASTERY_THRESHOLD)
       .map(([id]) => WORDS.find(w => w.id === id))
       .filter(Boolean)
     : [];
