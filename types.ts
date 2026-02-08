@@ -75,7 +75,10 @@ export interface WordPopup {
   kanji: string;
   en: string;
   romaji: string;
+  mnemonic?: string; // User-defined mnemonic rule
 }
+
+export type MnemonicRecord = Record<string, string>; // wordId -> mnemonic text
 
 export interface GameState {
   score: number;

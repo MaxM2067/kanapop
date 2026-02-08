@@ -3,7 +3,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 
 import { HIRAGANA, KATAKANA, COLUMNS, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT, SPAWN_INTERVAL_BASE, FALL_SPEED_BASE, SPEED_MULTIPLIERS } from './constants';
 import { WORDS } from './words';
-import { KanaMode, KanaCharacter, GameState, GameStats, Difficulty, GameHistoryItem, WordPopup, WordMastery, WordSRS, WordSRSData, ConfidenceLevel, Explosion } from './types';
+import { KanaMode, KanaCharacter, GameState, GameStats, Difficulty, GameHistoryItem, WordPopup, WordMastery, WordSRS, WordSRSData, ConfidenceLevel, Explosion, MnemonicRecord } from './types';
 import { SRS_INTERVALS, SRS_MAX_LEVEL, MASTERY_THRESHOLD, CONFIDENCE_THRESHOLD_DIFFICULT, CONFIDENCE_THRESHOLD_HESITANT, PROGRESS_CONFIDENT, PROGRESS_HESITANT, PROGRESS_DIFFICULT } from './srs';
 import StatsModal from './components/StatsModal';
 import HistoryPanel from './components/HistoryPanel';
@@ -93,17 +93,18 @@ const App: React.FC = () => {
   // Streak Popup State
   const [streakPopups, setStreakPopups] = useState<{ id: string; text: string; x: number; y: number }[]>([]);
 
-  // Hints state for click-to-hint (longer lasting than souls)
-  const [hints, setHints] = useState<{ id: string; x: number; y: number; text: string; createdAt: number }[]>([]);
+  // Mnemonic State
+  const [mnemonics, setMnemonics] = useState<MnemonicRecord>(() => {
+    const saved = localStorage.getItem('kana_pop_mnemonics');
+    return saved ? JSON.parse(saved) : {};
+  });
 
-  // Clean up old hints (after 3 seconds)
   useEffect(() => {
-    const interval = setInterval(() => {
-      const now = Date.now();
-      setHints(prev => prev.filter(h => now - h.createdAt < 3000));
-    }, 500);
-    return () => clearInterval(interval);
-  }, []);
+    localStorage.setItem('kana_pop_mnemonics', JSON.stringify(mnemonics));
+  }, [mnemonics]);
+
+  const [editingWord, setEditingWord] = useState<{ wordId: string; x: number; y: number } | null>(null);
+  const [hoveredWordGroupId, setHoveredWordGroupId] = useState<string | null>(null);
 
   // Mobile & Scaling State
   const [scale, setScale] = useState(1);
@@ -163,6 +164,11 @@ const App: React.FC = () => {
   // Keyboard Event Listener for Spacebar Pause
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if typing in an input or textarea
+      if (e.target instanceof HTMLElement && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) {
+        return;
+      }
+
       // Spacebar to toggle pause
       if (e.code === 'Space') {
         // Prevent scrolling
@@ -713,7 +719,8 @@ const App: React.FC = () => {
           y: match.y,
           kanji: match.kanji,
           en: match.en,
-          romaji: match.romaji
+          romaji: match.romaji,
+          mnemonic: match.wordId ? mnemonics[match.wordId] : undefined
         });
 
         // Update SRS with confidence calculation
@@ -928,9 +935,17 @@ const App: React.FC = () => {
 
         // Bonus Calculation: x1.5 for early guess + (Streak * 2) flat bonus?
         // User: "The bigger the series, the bigger the bonus".
-        const streakBonus = isEarlyGuess ? (newStreak * 5) : 0;
+        // Words Mode Nerf: Reduce all constants by approx 3x
+        const isWordType = match.type === 'word';
+        const streakMultiplier = isWordType ? 2 : 5;
+        const basePointValue = isWordType ? 3 : 10;
+        const explosionValue = isWordType ? 1 : 5;
+
+        const streakBonus = isEarlyGuess ? (newStreak * streakMultiplier) : 0;
         const multiplier = isEarlyGuess ? 1.5 : 1;
-        const basePoints = 10 + (newExplosions.length - 1) * 5;
+
+        // Base points + (Extra Explosions * Value)
+        const basePoints = basePointValue + (newExplosions.length - 1) * explosionValue;
         const totalPoints = Math.floor(basePoints * multiplier) + streakBonus;
 
         return {
@@ -948,7 +963,7 @@ const App: React.FC = () => {
             byWord: newStats.byWord
           },
           // Freeze the falling/spawning for 2.5 seconds (2500ms)
-          frozenUntil: Date.now() + 2500
+          frozenUntil: Date.now() + 1500
         };
       });
       setInputValue(''); // Reset input after match
@@ -986,39 +1001,11 @@ const App: React.FC = () => {
     setInputValue(prev => prev.slice(0, -1));
   };
 
-  // Click-to-hint handler for stacked word blocks
-  const showHint = (kana: KanaCharacter) => {
+  // Click handler for stacked word blocks (Edit Mnemonic)
+  const handleWordClick = (kana: KanaCharacter) => {
     if (kana.type !== 'word' || !kana.wordId) return;
-
-    const word = WORDS.find(w => w.id === kana.wordId);
-    if (!word) return;
-
-    // Increment hint count on all blocks of this word group
-    setGameState(prev => ({
-      ...prev,
-      stackedKana: prev.stackedKana.map(k =>
-        k.wordGroupId === kana.wordGroupId
-          ? { ...k, hintCount: (k.hintCount || 0) + 1 }
-          : k
-      ),
-      activeKana: prev.activeKana.map(k =>
-        k.wordGroupId === kana.wordGroupId
-          ? { ...k, hintCount: (k.hintCount || 0) + 1 }
-          : k
-      )
-    }));
-
-    // Show hint popup
-    setHints(prev => [...prev, {
-      id: Math.random().toString(),
-      x: kana.x,
-      y: kana.y,
-      text: `${word.kanji} (${word.romaji}) - ${word.en}`,
-      createdAt: Date.now()
-    }]);
-
-    // Return focus to input
-    setTimeout(() => inputRef.current?.focus(), 0);
+    setEditingWord({ wordId: kana.wordId, x: kana.x, y: kana.y });
+    setGameState(prev => ({ ...prev, isPaused: true }));
   };
 
   const getKanaColor = (type: string) => {
@@ -1047,6 +1034,46 @@ const App: React.FC = () => {
     }
     // Just landed - normal
     return 'bg-purple-300 text-purple-900 border-purple-400 font-bold';
+  };
+
+  const getWordHighlightStyle = (kana: KanaCharacter, hoveredId: string | null) => {
+    if (kana.type !== 'word' || !kana.wordGroupId || kana.wordGroupId !== hoveredId) {
+      return { className: '', style: {} };
+    }
+
+    const isSingle = (kana.wordLength || 1) === 1;
+    const isFirst = kana.wordIndex === 0;
+    const isLast = kana.wordIndex === (kana.wordLength! - 1);
+
+    // Base highlight classes
+    let classes = 'z-10 scale-105 ';
+    let shadow = '';
+    const color = '#facc15'; // yellow-400
+    const width = '4px';
+
+    if (isSingle) {
+      classes += 'ring-4 ring-yellow-400';
+    } else {
+      // Connect neighbors by removing rounded corners
+      if (isFirst) classes += 'rounded-r-none rounded-l-xl';
+      else if (isLast) classes += 'rounded-l-none rounded-r-xl';
+      else classes += 'rounded-none';
+
+      // Build Box Shadow for outer borders only
+      const sTop = `0 -${width} 0 0 ${color}`;
+      const sBottom = `0 ${width} 0 0 ${color}`;
+      const sLeft = `-${width} 0 0 0 ${color}`;
+      const sRight = `${width} 0 0 0 ${color}`;
+
+      const shadows = [];
+      shadows.push(sTop, sBottom); // Top/Bottom always
+      if (isFirst) shadows.push(sLeft);
+      if (isLast) shadows.push(sRight);
+
+      shadow = shadows.join(', ');
+    }
+
+    return { className: classes, style: shadow ? { boxShadow: shadow } : {} };
   };
 
   const getKanaStyle = (kana: KanaCharacter) => {
@@ -1238,29 +1265,40 @@ const App: React.FC = () => {
                 ))}
               </div>
 
-              {gameState.activeKana.map(kana => (
-                <div
-                  key={kana.id}
-                  className={`absolute flex items-center justify-center font-bold rounded-xl border-b-4 transition-transform ${getKanaColor(kana.type)} japanese-font`}
-                  style={getKanaStyle(kana)}
-                >
-                  {kana.char}
-                </div>
-              ))}
+              {gameState.activeKana.map(kana => {
+                const hl = getWordHighlightStyle(kana, hoveredWordGroupId);
+                return (
+                  <div
+                    key={kana.id}
+                    className={`absolute flex items-center justify-center font-bold rounded-xl border-b-4 transition-transform ${getKanaColor(kana.type)} japanese-font ${kana.type === 'word' ? 'cursor-pointer' : ''} ${hl.className}`}
+                    style={{ ...getKanaStyle(kana), ...hl.style }}
+                    onClick={() => kana.type === 'word' && handleWordClick(kana)}
+                    onMouseEnter={() => kana.type === 'word' && kana.wordGroupId && setHoveredWordGroupId(kana.wordGroupId)}
+                    onMouseLeave={() => setHoveredWordGroupId(null)}
+                  >
+                    {kana.char}
+                  </div>
+                );
+              })}
 
-              {gameState.stackedKana.map(kana => (
-                <div
-                  key={kana.id}
-                  className={`absolute flex items-center justify-center rounded-xl border-b-4 ${getStackedBlockColor(kana)} japanese-font ${kana.type === 'word' ? 'cursor-pointer hover:ring-2 hover:ring-yellow-400' : ''}`}
-                  style={getKanaStyle(kana)}
-                  onClick={() => kana.type === 'word' && showHint(kana)}
-                >
-                  {kana.char}
-                </div>
-              ))}
+              {gameState.stackedKana.map(kana => {
+                const hl = getWordHighlightStyle(kana, hoveredWordGroupId);
+                return (
+                  <div
+                    key={kana.id}
+                    className={`absolute flex items-center justify-center rounded-xl border-b-4 ${getStackedBlockColor(kana)} japanese-font ${kana.type === 'word' ? 'cursor-pointer' : ''} ${hl.className}`}
+                    style={{ ...getKanaStyle(kana), ...hl.style }}
+                    onClick={() => kana.type === 'word' && handleWordClick(kana)}
+                    onMouseEnter={() => kana.type === 'word' && kana.wordGroupId && setHoveredWordGroupId(kana.wordGroupId)}
+                    onMouseLeave={() => setHoveredWordGroupId(null)}
+                  >
+                    {kana.char}
+                  </div>
+                );
+              })}
 
               {/* Pause Overlay */}
-              {gameState.isPaused && (
+              {gameState.isPaused && !editingWord && (
                 <div className="absolute inset-0 bg-white/80 backdrop-blur-sm z-40 flex flex-col items-center justify-center">
                   <div className="text-6xl mb-4">⏸️</div>
                   <h2 className="text-2xl font-bold text-pink-500 mb-6">PAUSED</h2>
@@ -1331,52 +1369,89 @@ const App: React.FC = () => {
                 </div>
               ))}
 
-              {/* Click-to-hint popups - brighter and longer lasting */}
-              {hints.map(hint => (
-                <div
-                  key={hint.id}
-                  className="absolute flex items-center justify-center font-bold text-purple-900 pointer-events-none animate-pulse whitespace-nowrap z-30"
-                  style={{
-                    left: hint.x - 40,
-                    top: hint.y - 50,
-                  }}
-                >
-                  <span className="bg-yellow-200 px-4 py-2 rounded-xl shadow-lg border-2 border-yellow-400 text-sm">
-                    {hint.text}
-                  </span>
-                </div>
-              ))}
+              {/* Click-to-hint popups (Removed in favor of Mnemonic Modal) */}
 
-              {gameState.wordPopups.map(popup => (
-                <div
-                  key={popup.id}
-                  className="absolute flex flex-col items-center justify-center p-3 rounded-xl bg-white/90 shadow-xl border-2 border-purple-300 z-30 animate-float-up-slow pointer-events-none"
-                  style={{
-                    left: popup.x - 50, // Center roughly
-                    top: popup.y - 50,
-                    minWidth: '180px'
-                  }}
-                >
-                  <div className="text-4xl font-black text-purple-600 mb-1">{popup.kanji}</div>
-                  <div className="text-sm font-bold text-gray-400 uppercase tracking-wider">{popup.romaji}</div>
-                  <div className="text-base font-bold text-purple-400">{popup.en}</div>
-                </div>
-              ))}
+              {gameState.wordPopups.map(popup => {
+                const popupWidth = 220;
+                const popupHeight = 140;
+
+                let left = popup.x + (CELL_SIZE / 2) - (popupWidth / 2);
+                let top = popup.y - popupHeight + 20;
+
+                // Clamp Horizontal
+                if (left < 5) left = 5;
+                if (left + popupWidth > BOARD_WIDTH - 5) left = BOARD_WIDTH - popupWidth - 5;
+
+                // Vertical Flip
+                if (top < 5) {
+                  top = popup.y + CELL_SIZE + 10;
+                }
+
+                return (
+                  <div
+                    key={popup.id}
+                    className="absolute flex flex-col items-center justify-center p-3 rounded-xl bg-white/90 shadow-xl border-2 border-purple-300 z-30 animate-float-up-slow pointer-events-none"
+                    style={{
+                      left: left,
+                      top: top,
+                      width: popupWidth,
+                      minWidth: 'unset'
+                    }}
+                  >
+                    <div className="text-4xl font-black text-purple-600 mb-1">{popup.kanji}</div>
+                    <div className="text-sm font-bold text-gray-400 uppercase tracking-wider">{popup.romaji}</div>
+                    <div className="text-base font-bold text-purple-400 text-center leading-tight">{popup.en}</div>
+                    {popup.mnemonic && (
+                      <div className="mt-2 text-xs font-medium text-pink-600 bg-pink-50 px-2 py-1 rounded-lg text-center border border-pink-100 max-w-full break-words">
+                        {popup.mnemonic}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
 
               {/* Streak Popups */}
-              {streakPopups.map(popup => (
-                <div
-                  key={popup.id}
-                  className="absolute flex items-center justify-center font-black text-yellow-500 text-2xl z-40 animate-float-up pointer-events-none drop-shadow-md"
-                  style={{
-                    left: popup.x - 40,
-                    top: popup.y,
-                    textShadow: '0 2px 0 #fff, 0 -2px 0 #fff, 2px 0 0 #fff, -2px 0 0 #fff'
+              {streakPopups.map(popup => {
+                const width = 120;
+                let left = popup.x + (CELL_SIZE / 2) - (width / 2);
+
+                if (left < 5) left = 5;
+                if (left + width > BOARD_WIDTH - 5) left = BOARD_WIDTH - width - 5;
+
+                return (
+                  <div
+                    key={popup.id}
+                    className="absolute flex items-center justify-center font-black text-yellow-500 text-2xl z-40 animate-float-up pointer-events-none drop-shadow-md"
+                    style={{
+                      left: left,
+                      top: popup.y,
+                      width: width,
+                      textShadow: '0 2px 0 #fff, 0 -2px 0 #fff, 2px 0 0 #fff, -2px 0 0 #fff'
+                    }}
+                  >
+                    {popup.text}
+                  </div>
+                );
+              })}
+              {editingWord && (
+                <MnemonicModal
+                  wordId={editingWord.wordId}
+                  initialMnemonic={mnemonics[editingWord.wordId] || ''}
+                  x={editingWord.x}
+                  y={editingWord.y}
+                  onSave={(id, text) => {
+                    setMnemonics(prev => ({ ...prev, [id]: text }));
+                    setEditingWord(null);
+                    setGameState(prev => ({ ...prev, isPaused: false }));
+                    setTimeout(() => inputRef.current?.focus(), 0);
                   }}
-                >
-                  {popup.text}
-                </div>
-              ))}
+                  onClose={() => {
+                    setEditingWord(null);
+                    setGameState(prev => ({ ...prev, isPaused: false }));
+                    setTimeout(() => inputRef.current?.focus(), 0);
+                  }}
+                />
+              )}
             </>
           )}
         </div>
@@ -1492,3 +1567,60 @@ const App: React.FC = () => {
 };
 
 export default App;
+
+const MnemonicModal: React.FC<{
+  wordId: string;
+  initialMnemonic: string;
+  x: number;
+  y: number;
+  onSave: (id: string, text: string) => void;
+  onClose: () => void;
+}> = ({ wordId, initialMnemonic, x, y, onSave, onClose }) => {
+  const word = WORDS.find(w => w.id === wordId);
+  const [text, setText] = useState(initialMnemonic);
+
+  if (!word) return null;
+
+  return (
+    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="bg-white rounded-2xl shadow-2xl p-6 w-[320px] max-w-full mx-4 transform transition-all"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="text-center mb-4">
+          <div className="text-5xl font-black text-purple-600 mb-2">{word.kanji || word.kana}</div>
+          <div className="text-xl font-bold text-gray-400 tracking-wider uppercase">{word.romaji}</div>
+          <div className="text-xl font-bold text-purple-400 mt-1">{word.en}</div>
+        </div>
+
+        <div className="mb-4">
+          <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">
+            Mnemonic Rule (MP)
+          </label>
+          <textarea
+            value={text}
+            onChange={e => setText(e.target.value)}
+            className="w-full h-24 p-3 bg-yellow-50 border-2 border-yellow-200 rounded-xl text-gray-700 placeholder-yellow-300 focus:outline-none focus:border-yellow-400 resize-none font-medium"
+            placeholder="e.g. 'NEKO' sounds like 'Neck', cats have necks..."
+            autoFocus
+          />
+        </div>
+
+        <div className="flex gap-3">
+          <button
+            onClick={onClose}
+            className="flex-1 px-4 py-3 bg-gray-100 text-gray-500 font-bold rounded-xl hover:bg-gray-200 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => onSave(wordId, text)}
+            className="flex-1 px-4 py-3 bg-purple-500 text-white font-bold rounded-xl hover:bg-purple-600 shadow-lg transition-transform active:scale-95"
+          >
+            Save MP
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
