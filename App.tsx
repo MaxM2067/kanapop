@@ -20,10 +20,12 @@ const App: React.FC = () => {
     explosions: [],
     souls: [],
     wordPopups: [],
-    mode: 'hiragana',
+    mode: (localStorage.getItem('kana_pop_mode') as KanaMode) || 'hiragana',
     difficulty: 'slow',
     level: 1, // Represents max morae now
     stats: { correct: 0, missed: 0, byCharacter: {}, byWord: {} },
+    frozenUntil: 0,
+    streak: 0,
   });
 
   const [history, setHistory] = useState<GameHistoryItem[]>(() => {
@@ -73,6 +75,11 @@ const App: React.FC = () => {
     localStorage.setItem('kana_pop_srs', JSON.stringify(wordSRS));
   }, [wordSRS]);
 
+  // Persist Game Mode
+  useEffect(() => {
+    localStorage.setItem('kana_pop_mode', gameState.mode);
+  }, [gameState.mode]);
+
   // Track blocks processed for confidence calculation
   const blocksProcessedRef = useRef<number>(0);
 
@@ -82,6 +89,9 @@ const App: React.FC = () => {
   const requestRef = useRef<number>();
   const lastTimeRef = useRef<number>();
   const spawnTimerRef = useRef<number>(0);
+
+  // Streak Popup State
+  const [streakPopups, setStreakPopups] = useState<{ id: string; text: string; x: number; y: number }[]>([]);
 
   // Hints state for click-to-hint (longer lasting than souls)
   const [hints, setHints] = useState<{ id: string; x: number; y: number; text: string; createdAt: number }[]>([]);
@@ -125,7 +135,10 @@ const App: React.FC = () => {
   }, []);
 
   // Web Speech API for TTS
+  const [audioEnabled, setAudioEnabled] = useState(true);
+
   const speakKana = (kana: string) => {
+    if (!audioEnabled) return;
     if (!('speechSynthesis' in window)) return;
 
     const utterance = new SpeechSynthesisUtterance(kana);
@@ -147,9 +160,46 @@ const App: React.FC = () => {
     window.speechSynthesis.speak(utterance);
   };
 
-  const testAudio = () => {
-    speakKana('あ');
-  };
+  // Keyboard Event Listener for Spacebar Pause
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Spacebar to toggle pause
+      if (e.code === 'Space') {
+        // Prevent scrolling
+        e.preventDefault();
+
+        setGameState(prev => {
+          // Only toggle if game is started and not over
+          if (!prev.isActive && !prev.isPaused) return prev; // Do nothing if game hasn't started
+          if (prev.isGameOver) return prev;
+
+          const nowPaused = !prev.isPaused;
+          // Reset lastTimeRef when resuming to prevent time jump
+          if (!nowPaused) {
+            lastTimeRef.current = undefined;
+            // Also refocus input on resume
+            setTimeout(() => inputRef.current?.focus(), 0);
+          }
+          return { ...prev, isPaused: nowPaused };
+        });
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  // Score Highlight State
+
+  // Score Highlight State
+  const [scoreHighlight, setScoreHighlight] = useState(false);
+
+  useEffect(() => {
+    if (scoreHighlight) {
+      const timer = setTimeout(() => setScoreHighlight(false), 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [scoreHighlight]);
 
   // Pre-load voices (often needed for Chrome/Safari)
   useEffect(() => {
@@ -177,11 +227,19 @@ const App: React.FC = () => {
       difficulty,
       level: 1,
       stats: { correct: 0, missed: 0, byCharacter: {}, byWord: {} },
+      frozenUntil: 0,
+      streak: 0,
+      isFreezeAbilityActive: false,
     });
     setInputValue('');
     setShowStats(false);
     lastTimeRef.current = undefined;
     spawnTimerRef.current = 0;
+
+    // Auto-focus input on start
+    setTimeout(() => {
+      inputRef.current?.focus();
+    }, 0);
   };
 
   const saveHistory = useCallback((currentScore: number, currentStats: GameStats) => {
@@ -218,6 +276,8 @@ const App: React.FC = () => {
       // Reset lastTimeRef when resuming to prevent time jump
       if (!nowPaused) {
         lastTimeRef.current = undefined;
+        // Also refocus input on resume
+        setTimeout(() => inputRef.current?.focus(), 0);
       }
       return { ...prev, isPaused: nowPaused };
     });
@@ -367,6 +427,16 @@ const App: React.FC = () => {
 
     if (!gameState.isActive || gameState.isGameOver || gameState.isPaused) return;
 
+    // Freeze Check: If currently frozen, skip physics and spawning
+    if (gameState.frozenUntil && Date.now() < gameState.frozenUntil) {
+      // Just keep requesting frames to keep UI responsive/animated (e.g. explosives)
+      requestRef.current = requestAnimationFrame(update);
+      return;
+    } else if (gameState.isFreezeAbilityActive) {
+      // Freeze expired, reset the flag so other pauses can happen cleanly if needed (though not strictly necessary as flag is mainly for UI)
+      setGameState(prev => ({ ...prev, isFreezeAbilityActive: false }));
+    }
+
     spawnTimerRef.current += deltaTime;
     // Adaptive Difficulty: Slow down if board is getting full
     const crowdingFactor = Math.max(0, (gameState.activeKana.length + gameState.stackedKana.length) - 5) * 200;
@@ -382,6 +452,7 @@ const App: React.FC = () => {
       let nextActiveKana: KanaCharacter[] = [];
       let nextStackedKana = [...prev.stackedKana];
       let triggeredGameOver = false;
+      let streakReset = false; // Lifted scope
 
       // Adjusted speed by difficulty multiplier
       const baseSpeed = FALL_SPEED_BASE * SPEED_MULTIPLIERS[prev.difficulty];
@@ -452,8 +523,11 @@ const App: React.FC = () => {
           });
 
           // Freeze group with stackedAt for SRS confidence tracking
+          // STREAK RESET: Block touched the floor/stack
+
           group.forEach(kana => {
             nextStackedKana.push({ ...kana, y: minTargetY, stackedAt: blocksProcessedRef.current });
+            streakReset = true; // Reset streak if any block lands
 
             // Penalty & Soul (only show auto-hint for kana, not words - words use click-to-hint)
             prev.score = Math.max(0, prev.score - 5);
@@ -582,6 +656,7 @@ const App: React.FC = () => {
         isGameOver: triggeredGameOver,
         isActive: !triggeredGameOver,
         score: Math.max(0, prev.score), // Ensure non-negative
+        streak: streakReset ? 0 : prev.streak, // Reset streak if block landed
       };
     });
 
@@ -621,6 +696,12 @@ const App: React.FC = () => {
     }
 
     if (match) {
+      // Check if it's an early guess (active falling items only, not stacked)
+      // "Active" means it's in activeKana list. Stacked items are in stackedKana.
+      // However, duplicate IDs might exist if we aren't careful, but game logic separates them.
+      // A match is found in `allVisible`. We need to verify if this specific match instance is in activeKana.
+      const isEarlyGuess = gameState.activeKana.some(k => k.id === match!.id);
+
       // Logic calculation outside setGameState to keep variables in scope
       let newExplosions = [{ id: Math.random().toString(), x: match.x, y: match.y }];
       let newWordPopups: WordPopup[] = [];
@@ -823,19 +904,51 @@ const App: React.FC = () => {
           speakKana(match.char);
         }
 
+        let newStreak = prev.streak;
+        if (isEarlyGuess) {
+          setScoreHighlight(true);
+          newStreak += 1;
+
+          // Streak Popup Logic
+          // Milestones: 5, 10, 20, 30, 40...
+          if (newStreak === 5 || newStreak === 10 || (newStreak >= 20 && newStreak % 10 === 0)) {
+            setStreakPopups(sp => [...sp, {
+              id: Math.random().toString(),
+              text: `Strike ${newStreak}!`,
+              x: match!.x, // Show near the explosion
+              y: match!.y - 50
+            }]);
+
+            // Remove popup after animation
+            setTimeout(() => {
+              setStreakPopups(sp => sp.slice(1)); // Simple queue removal or use ID filter
+            }, 1500);
+          }
+        }
+
+        // Bonus Calculation: x1.5 for early guess + (Streak * 2) flat bonus?
+        // User: "The bigger the series, the bigger the bonus".
+        const streakBonus = isEarlyGuess ? (newStreak * 5) : 0;
+        const multiplier = isEarlyGuess ? 1.5 : 1;
+        const basePoints = 10 + (newExplosions.length - 1) * 5;
+        const totalPoints = Math.floor(basePoints * multiplier) + streakBonus;
+
         return {
           ...prev,
           activeKana: filteredActive,
           stackedKana: filteredStacked,
           explosions: [...prev.explosions, ...newExplosions],
           wordPopups: [...prev.wordPopups, ...newWordPopups],
-          score: prev.score + 10 + (newExplosions.length - 1) * 5,
+          score: prev.score + totalPoints,
+          streak: newStreak,
           stats: {
             ...prev.stats,
             correct: prev.stats.correct + 1,
             byCharacter: newStats.byCharacter,
             byWord: newStats.byWord
-          }
+          },
+          // Freeze the falling/spawning for 2.5 seconds (2500ms)
+          frozenUntil: Date.now() + 2500
         };
       });
       setInputValue(''); // Reset input after match
@@ -903,6 +1016,9 @@ const App: React.FC = () => {
       text: `${word.kanji} (${word.romaji}) - ${word.en}`,
       createdAt: Date.now()
     }]);
+
+    // Return focus to input
+    setTimeout(() => inputRef.current?.focus(), 0);
   };
 
   const getKanaColor = (type: string) => {
@@ -992,7 +1108,7 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen flex flex-col md:flex-row items-center justify-center p-4 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-pink-100 via-pink-50 to-white overflow-hidden fixed inset-0">
+    <div className="min-h-screen flex flex-col md:flex-row items-center justify-center p-2 md:p-4 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-pink-100 via-pink-50 to-white overflow-hidden fixed inset-0">
 
       <HistoryPanel history={history} />
 
@@ -1004,51 +1120,96 @@ const App: React.FC = () => {
                 KANA POP! <span className="text-2xl">✨</span>
               </h1>
               <div className="flex gap-2 mt-2 items-center">
-                {(['hiragana', 'katakana', 'both', 'words'] as KanaMode[]).map(m => (
-                  <button
-                    key={m}
-                    onClick={() => !gameState.isActive && setGameState(prev => ({ ...prev, mode: m }))}
-                    disabled={gameState.isActive}
-                    className={`px-3 py-1 text-[10px] font-black rounded-full border-2 transition-all capitalize ${gameState.mode === m
-                      ? 'bg-pink-400 text-white border-pink-400'
-                      : 'bg-white text-pink-300 border-pink-100 hover:border-pink-200'
-                      } ${gameState.isActive ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-                  >
-                    {m}
-                  </button>
-                ))}
+                {/* Hiragana Toggle */}
                 <button
-                  onClick={testAudio}
-                  className="ml-2 w-6 h-6 rounded-full bg-pink-100 hover:bg-pink-200 text-pink-500 flex items-center justify-center transition-colors"
-                  title="Test Audio"
+                  onClick={() => {
+                    if (gameState.isActive) return;
+                    setGameState(prev => {
+                      let newMode: KanaMode = prev.mode;
+                      if (prev.mode === 'words') {
+                        newMode = 'hiragana';
+                      } else if (prev.mode === 'katakana') {
+                        newMode = 'both';
+                      } else if (prev.mode === 'both') {
+                        newMode = 'katakana';
+                      } else if (prev.mode === 'hiragana') {
+                        // Prevent deselecting the last one? Or just keep it as is.
+                        // User said "Start" is disabled if nothing selected, but let's just enforce at least one.
+                        // Actually, let's allow toggling off if we want, but better to keep one active.
+                        // Let's implement: Click H when H is active -> Do nothing (must have one).
+                        // Unless we allow "None" which disables start. Simple approach: Enforce 1.
+                        newMode = 'hiragana';
+                      }
+                      return { ...prev, mode: newMode };
+                    });
+                  }}
+                  disabled={gameState.isActive}
+                  className={`px-4 py-2 text-sm font-black rounded-full border-2 transition-all capitalize ${gameState.mode === 'hiragana' || gameState.mode === 'both'
+                    ? 'bg-pink-400 text-white border-pink-400'
+                    : 'bg-white text-pink-300 border-pink-100 hover:border-pink-200'
+                    } ${gameState.isActive ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
                 >
-                  🔊
+                  Hiragana
+                </button>
+
+                {/* Katakana Toggle */}
+                <button
+                  onClick={() => {
+                    if (gameState.isActive) return;
+                    setGameState(prev => {
+                      let newMode: KanaMode = prev.mode;
+                      if (prev.mode === 'words') {
+                        newMode = 'katakana';
+                      } else if (prev.mode === 'hiragana') {
+                        newMode = 'both';
+                      } else if (prev.mode === 'both') {
+                        newMode = 'hiragana';
+                      } else if (prev.mode === 'katakana') {
+                        newMode = 'katakana';
+                      }
+                      return { ...prev, mode: newMode };
+                    });
+                  }}
+                  disabled={gameState.isActive}
+                  className={`px-4 py-2 text-sm font-black rounded-full border-2 transition-all capitalize ${gameState.mode === 'katakana' || gameState.mode === 'both'
+                    ? 'bg-blue-400 text-white border-blue-400' // Different color for Katakana active state? Or keep pink theme? App uses pink/blue distinction elsewhere.
+                    // Code below uses pink for active. Let's stick to pink for consistency or use blue for Katakana.
+                    // Context: Hiragana=Pink, Katakana=Blue. Let's try to use Blue for Katakana button when active.
+                    : 'bg-white text-blue-300 border-blue-100 hover:border-blue-200'
+                    } ${gameState.isActive ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
+                      ${gameState.mode === 'katakana' || gameState.mode === 'both' ? '!bg-blue-400 !border-blue-400 !text-white' : ''}
+                      `}
+                // Note: Tailwind config might not support ! prefix without JIT, but usually fine in Vite. 
+                // Safest to just conditional string.
+                >
+                  Katakana
+                </button>
+
+                {/* Words Toggle */}
+                <button
+                  onClick={() => !gameState.isActive && setGameState(prev => ({ ...prev, mode: 'words' }))}
+                  disabled={gameState.isActive}
+                  className={`px-4 py-2 text-sm font-black rounded-full border-2 transition-all capitalize ${gameState.mode === 'words'
+                    ? 'bg-purple-400 text-white border-purple-400'
+                    : 'bg-white text-purple-300 border-purple-100 hover:border-purple-200'
+                    } ${gameState.isActive ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                >
+                  Words
+                </button>
+                <button
+                  onClick={() => setAudioEnabled(prev => !prev)}
+                  className={`ml-2 w-8 h-8 text-lg rounded-full ${audioEnabled ? 'bg-pink-100 hover:bg-pink-200 text-pink-500' : 'bg-gray-200 hover:bg-gray-300 text-gray-400'} flex items-center justify-center transition-colors`}
+                  title={audioEnabled ? 'Sound ON' : 'Sound OFF'}
+                >
+                  {audioEnabled ? '🔊' : '🔇'}
                 </button>
               </div>
             </div>
             <div className="text-right">
-              <div className="text-pink-600 text-[10px] font-bold uppercase tracking-wider mb-[-4px]">Score</div>
-              <div className="text-4xl font-black text-pink-500 tabular-nums">{gameState.score}</div>
-            </div>
-          </div>
-
-          {/* Difficulty Selector */}
-          <div className="flex items-center gap-3 bg-white/60 p-2 rounded-2xl border-2 border-pink-100">
-            <span className="text-[10px] font-bold text-pink-400 uppercase ml-1">Speed:</span>
-            <div className="flex gap-1 flex-1">
-              {(['slow', 'normal', 'fast'] as Difficulty[]).map(d => (
-                <button
-                  key={d}
-                  onClick={() => !gameState.isActive && setGameState(prev => ({ ...prev, difficulty: d }))}
-                  disabled={gameState.isActive}
-                  className={`flex-1 py-1 text-[10px] font-bold rounded-lg border transition-all capitalize ${gameState.difficulty === d
-                    ? 'bg-blue-400 text-white border-blue-400'
-                    : 'bg-white text-blue-300 border-blue-50 hover:border-blue-100'
-                    } ${gameState.isActive ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-                >
-                  {d === 'slow' ? '🐢 Slow' : d === 'normal' ? '🐰 Normal' : '⚡ Fast'}
-                </button>
-              ))}
+              <div className="text-pink-600 text-sm font-bold uppercase tracking-wider mb-[-4px]">Score</div>
+              <div className={`text-5xl font-black tabular-nums transition-all duration-300 ${scoreHighlight ? 'text-yellow-400 scale-125 drop-shadow-[0_0_10px_rgba(250,204,21,0.8)]' : 'text-pink-500'}`}>
+                {gameState.score}
+              </div>
             </div>
           </div>
         </div>
@@ -1201,11 +1362,59 @@ const App: React.FC = () => {
                   <div className="text-base font-bold text-purple-400">{popup.en}</div>
                 </div>
               ))}
+
+              {/* Streak Popups */}
+              {streakPopups.map(popup => (
+                <div
+                  key={popup.id}
+                  className="absolute flex items-center justify-center font-black text-yellow-500 text-2xl z-40 animate-float-up pointer-events-none drop-shadow-md"
+                  style={{
+                    left: popup.x - 40,
+                    top: popup.y,
+                    textShadow: '0 2px 0 #fff, 0 -2px 0 #fff, 2px 0 0 #fff, -2px 0 0 #fff'
+                  }}
+                >
+                  {popup.text}
+                </div>
+              ))}
             </>
           )}
         </div>
 
-        <div className="mt-6 w-full max-w-[480px] flex gap-3 px-2">
+        <div className="mt-6 w-full max-w-[480px] flex gap-1 md:gap-2 px-2">
+          {/* Freeze Ability Button */}
+          {gameState.isActive && !gameState.isGameOver && (
+            <button
+              onClick={() => {
+                if (gameState.score >= 150 && !gameState.isPaused) {
+                  setGameState(prev => ({
+                    ...prev,
+                    score: prev.score - 150, // Cost 150
+                    frozenUntil: Date.now() + 10000, // 10 seconds
+                    isFreezeAbilityActive: true
+                  }));
+                  setTimeout(() => inputRef.current?.focus(), 0); // Keep focus
+                }
+              }}
+              disabled={gameState.score < 150 || gameState.isPaused || (!!gameState.frozenUntil && gameState.frozenUntil > Date.now() && gameState.isFreezeAbilityActive)}
+              className={`relative border-4 font-bold rounded-2xl p-2 md:p-4 flex flex-col items-center justify-center transition-all active:scale-95 min-w-[60px] md:min-w-[80px] ${gameState.score >= 150
+                ? 'bg-cyan-100 border-cyan-300 text-cyan-600 hover:bg-cyan-200 hover:border-cyan-400'
+                : 'bg-gray-100 border-gray-200 text-gray-400 opacity-70 cursor-not-allowed'
+                }`}
+            >
+              <div className="text-3xl mb-1">❄️</div>
+              {gameState.isFreezeAbilityActive && gameState.frozenUntil && gameState.frozenUntil > Date.now() ? (
+                <div className="absolute inset-0 flex items-center justify-center bg-cyan-100/90 rounded-xl">
+                  <span className="text-xl font-black text-cyan-600 animate-pulse">
+                    {Math.ceil((gameState.frozenUntil - Date.now()) / 1000)}s
+                  </span>
+                </div>
+              ) : (
+                <div className="text-[10px] font-black opacity-80">-150</div>
+              )}
+            </button>
+          )}
+
           <input
             ref={inputRef}
             type="text"
@@ -1215,29 +1424,48 @@ const App: React.FC = () => {
             disabled={!gameState.isActive || gameState.isPaused}
             readOnly={isMobile} // Custom Mobile keyboard logic
             autoFocus={!isMobile}
-            className="flex-1 bg-white border-4 border-pink-200 rounded-2xl px-6 py-4 text-2xl font-bold text-pink-600 placeholder-pink-200 focus:outline-none focus:border-pink-400 transition-colors shadow-inner"
+            className="flex-1 min-w-0 bg-white border-4 border-pink-200 rounded-2xl px-2 py-2 md:px-4 md:py-4 text-xl md:text-2xl font-bold text-pink-600 placeholder-pink-200 focus:outline-none focus:border-pink-400 transition-colors shadow-inner"
           />
+
           {gameState.isActive && (
             <button
               onClick={togglePause}
-              className={`border-4 font-bold px-4 py-4 rounded-2xl transition-all active:scale-95 ${gameState.isPaused
-                ? 'bg-pink-400 text-white border-pink-400 hover:bg-pink-500'
-                : 'bg-white text-pink-400 border-pink-200 hover:text-pink-500 hover:border-pink-300'
+              className={`border-4 font-bold rounded-2xl transition-all active:scale-95 flex items-center justify-center
+                ${isMobile ? 'w-[60px] p-2' : 'px-4 py-4'} 
+                ${gameState.isPaused
+                  ? 'bg-pink-400 border-pink-400' // Resume State (Active/Highlight)
+                  : 'bg-white border-pink-200 hover:border-pink-300' // Pause State (Normal)
                 }`}
               title={gameState.isPaused ? 'Resume' : 'Pause'}
+            // On Mobile: Wider. On Desktop: Normal padding.
             >
-              {gameState.isPaused ? '▶️' : '⏸️'}
+              {gameState.isPaused ? (
+                // Play Icon (Triangle) - White if bg is pink, Pink if bg is white
+                <svg viewBox="0 0 24 24" fill="currentColor" className={`w-8 h-8 md:w-6 md:h-6 ${gameState.isPaused ? 'text-white' : 'text-pink-400'}`}>
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              ) : (
+                // Pause Icon (Double Rect)
+                <svg viewBox="0 0 24 24" fill="currentColor" className={`w-8 h-8 md:w-6 md:h-6 ${gameState.isPaused ? 'text-white' : 'text-pink-400'}`}>
+                  <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
+                </svg>
+              )}
             </button>
           )}
           <button
             onClick={stopGame}
-            className="bg-white border-4 border-pink-200 text-pink-400 hover:text-pink-500 hover:border-pink-300 font-bold px-6 py-4 rounded-2xl transition-all active:scale-95"
+            className={`bg-white border-4 border-pink-200 text-pink-400 hover:text-pink-500 hover:border-pink-300 font-bold rounded-2xl transition-all active:scale-95 flex items-center justify-center
+              ${isMobile ? 'w-[60px] p-2' : 'px-6 py-4'}`}
+            title="Stop Game"
           >
-            STOP
+            {/* Stop Icon (Square) */}
+            <svg viewBox="0 0 24 24" fill="currentColor" className="w-8 h-8 md:w-6 md:h-6">
+              <path d="M6 6h12v12H6z" />
+            </svg>
           </button>
         </div>
 
-        <div className="mt-4 text-pink-300 text-[10px] font-bold uppercase tracking-widest flex gap-4">
+        <div className="mt-4 text-pink-300 text-[10px] font-bold uppercase tracking-widest hidden md:flex gap-4">
           <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-pink-300" /> Hiragana</span>
           <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-300" /> Katakana</span>
           <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-purple-300" /> Words</span>

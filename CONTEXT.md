@@ -17,7 +17,7 @@ KANA POP! is an interactive, Tetris-style web game designed to help users master
     -   **Both**: Mixed mode.
     -   **Words**: Practice Japanese vocabulary words.
 2.  **Difficulty Levels**: Slow, Normal, and Fast (adjusts drop speed).
-    -   **Adaptive Pacing**: Speed and spawn rate increase dynamically as your score grows.
+    -   **Adaptive Pacing**: Speed and spawn rate increase dynamically as your score grows (disabled in Words mode).
 3.  **Gameplay Mechanics**:
     -   **Explosive Clearing (Kana Mode)**: Clearing a stacked block also destroys neighbors (Top, Left, Right).
     -   **Chain Clearing (Words Mode)**: Clearing a word explodes ALL matching words (same `wordId`) on screen simultaneously.
@@ -36,14 +36,32 @@ KANA POP! is an interactive, Tetris-style web game designed to help users master
     -   **Falling Words**: Words fall as horizontal blocks (grouped by `wordGroupId`).
     -   **Morae-based Progression**: Difficulty scales by number of Morae (e.g., 2 morae -> 3 morae).
     -   **Smart Rotation**: Words are introduced in batches of ~15.
-    -   **Mastery System**:
-        -   **Mastery**: Clearing a word 7 times marks it as "Learned".
-        -   **Retirement**: "Learned" words are retired from the active rotation to make room for new words.
-        -   **Review**: 10% chance to spawn a mastered word for spaced repetition.
-        -   **Progression**: Unlocks next mora level automatically when current level words are mastered.
+    -   **SRS (Spaced Repetition System)**:
+        -   **Confidence Levels**: Confident (⭐ air catch), Hesitant (short floor time), Difficult (long floor time/hints used).
+        -   **Progress System**: Confidence determines SRS level progress (0.5 for confident, 0.25 for hesitant, 0 for difficult).
+        -   **6 SRS Levels**: With increasing review intervals (0, 1, 3, 7, 14, 30, 60 sessions).
+        -   **Mastery**: Reaching SRS level 6 marks word as "Learned".
+        -   **Review**: Mastered words are scheduled for review based on SRS intervals.
+    -   **Click-to-Hint System**:
+        -   **No Auto-Hints**: Words don’t show hints automatically when landing.
+        -   **Click/Tap**: Click stacked word blocks to see hint (漢字 + romaji + English). **(Autofocuses input after click)**.
+        -   **Bright Popups**: Yellow hints visible for 3 seconds.
+        -   **SRS Penalty**: 1-2 hints → hesitant max, 3+ hints → difficult.
+    -   **Visual Feedback**:
+        -   **Color-coded Blocks**: Stacked blocks fade to gray based on time on floor (~10 blocks for gray).
+        -   **Golden Explosions**: ⭐ star explosion when word caught in air (confident).
+        -   **Strike System**: Visual "Strike X!" popups for consecutive air catches.
+        -   **Score Highlight**: Score glows yellow/gold and scales up on early guesses.
     -   **Enhanced Stats**:
         -   Tracks stats by Word ID (Kanji, Romaji, English).
-        -   **Learned Words List**: Displays all mastered words in the Game Over screen.
+    -   **Bonuses & Controls**:
+        -   **Early Guess Bonus**: x1.5 score multiplier for catching falling words.
+        -   **Falling Delay**: 2.5s pause in falling/spawning after correct guess (thinking time).
+        -   **Streak System**: Consecutive air catches increase streak; streak adds bonus points (`Streak * 5`). Resets on floor touch.
+        -   **Spacebar Pause**: Press Space to Pause/Resume (autofocuses input).
+        -   **Freeze Ability**: Active ability (Button ❄️). Costs 150 points. Freezes time for 20 seconds.
+        -   **Persistent Mode**: Remembers last played mode (e.g. Words) on reload.
+        -   **Learned Words List**: Displays all SRS level 6 words in Game Over screen.
 
 ## Project Structure
 ```
@@ -54,7 +72,8 @@ KANA POP! is an interactive, Tetris-style web game designed to help users master
 │   ├── HistoryPanel.tsx  # Sidebar showing past game history
 │   └── VirtualKeyboard.tsx # Mobile virtual keyboard
 ├── constants.ts          # Game constants (Speed, Kana data, Board dimensions)
-├── types.ts              # TypeScript interfaces (GameState, KanaCharacter, etc.)
+├── types.ts              # TypeScript interfaces (GameState, KanaCharacter, WordSRS, etc.)
+├── srs.ts                # SRS constants (intervals, thresholds, progress values)
 ├── words.ts              # Vocabulary database (~430 unique words by romaji)
 ├── vite.config.ts        # Vite configuration
 └── package.json          # Dependencies and scripts
@@ -65,7 +84,7 @@ KANA POP! is an interactive, Tetris-style web game designed to help users master
 -   **State Management**: React `useState` tracks active falling kana, stacked kana, score, history, pause state, and game status.
 -   **Input Handling**: Listens to user typing; matches input against active/stacked kana Romaji.
 -   **Gravity System**: Stacked blocks automatically fall when space below is cleared.
--   **Persistence**: Saves game history and word mastery to `localStorage`.
+-   **Persistence**: Saves game history and SRS data to `localStorage` (auto-migrates from old mastery format).
 
 ## Setup & Development
 1.  **Install Dependencies**:

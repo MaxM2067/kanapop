@@ -91,6 +91,9 @@ export interface GameState {
   difficulty: Difficulty;
   level: number;
   stats: GameStats;
+  frozenUntil?: number; // Timestamp until which physics/spawning is frozen
+  streak: number; // Current series of early guesses
+  isFreezeAbilityActive?: boolean; // If true, current freeze is from ability (longer, countdown shown)
 }
 export interface GameHistoryItem {
   id: string;
