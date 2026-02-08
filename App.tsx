@@ -2,7 +2,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 
 import { HIRAGANA, KATAKANA, COLUMNS, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT, SPAWN_INTERVAL_BASE, FALL_SPEED_BASE, SPEED_MULTIPLIERS } from './constants';
-import { KanaMode, KanaCharacter, GameState, GameStats, Difficulty, GameHistoryItem } from './types';
+import { WORDS } from './words';
+import { KanaMode, KanaCharacter, GameState, GameStats, Difficulty, GameHistoryItem, WordPopup, WordMastery, Explosion } from './types';
 import StatsModal from './components/StatsModal';
 import HistoryPanel from './components/HistoryPanel';
 import VirtualKeyboard from './components/VirtualKeyboard';
@@ -12,14 +13,16 @@ const App: React.FC = () => {
     score: 0,
     isActive: false,
     isGameOver: false,
+    isPaused: false,
     activeKana: [],
     stackedKana: [],
     explosions: [],
     souls: [],
+    wordPopups: [],
     mode: 'hiragana',
     difficulty: 'slow',
-    level: 1,
-    stats: { correct: 0, missed: 0, byCharacter: {} },
+    level: 1, // Represents max morae now
+    stats: { correct: 0, missed: 0, byCharacter: {}, byWord: {} },
   });
 
   const [history, setHistory] = useState<GameHistoryItem[]>(() => {
@@ -30,6 +33,15 @@ const App: React.FC = () => {
   useEffect(() => {
     localStorage.setItem('kana_pop_history', JSON.stringify(history));
   }, [history]);
+
+  const [wordMastery, setWordMastery] = useState<WordMastery>(() => {
+    const saved = localStorage.getItem('kana_pop_mastery');
+    return saved ? JSON.parse(saved) : {};
+  });
+
+  useEffect(() => {
+    localStorage.setItem('kana_pop_mastery', JSON.stringify(wordMastery));
+  }, [wordMastery]);
 
   const [inputValue, setInputValue] = useState('');
   const [showStats, setShowStats] = useState(false);
@@ -110,14 +122,16 @@ const App: React.FC = () => {
       score: 0,
       isActive: true,
       isGameOver: false,
+      isPaused: false,
       activeKana: [],
       stackedKana: [],
       explosions: [],
       souls: [],
+      wordPopups: [],
       mode,
       difficulty,
       level: 1,
-      stats: { correct: 0, missed: 0, byCharacter: {} },
+      stats: { correct: 0, missed: 0, byCharacter: {}, byWord: {} },
     });
     setInputValue('');
     setShowStats(false);
@@ -148,36 +162,147 @@ const App: React.FC = () => {
     if (gameState.isActive) {
       saveHistory(gameState.score, gameState.stats);
     }
-    setGameState(prev => ({ ...prev, isActive: false }));
+    setGameState(prev => ({ ...prev, isActive: false, isPaused: false }));
     setShowStats(true);
   };
 
+  const togglePause = () => {
+    if (!gameState.isActive || gameState.isGameOver) return;
+    setGameState(prev => {
+      const nowPaused = !prev.isPaused;
+      // Reset lastTimeRef when resuming to prevent time jump
+      if (!nowPaused) {
+        lastTimeRef.current = undefined;
+      }
+      return { ...prev, isPaused: nowPaused };
+    });
+  };
+
   const spawnKana = useCallback(() => {
-    const list = gameState.mode === 'hiragana'
-      ? HIRAGANA
-      : gameState.mode === 'katakana'
-        ? KATAKANA
-        : [...HIRAGANA, ...KATAKANA];
+    let list: any[] = [];
+    if (gameState.mode === 'words') {
+      // 1. Determine Difficulty (Max Morae)
+      // Start with score-based base level
+      let maxMorae = gameState.score < 500 ? 2 : gameState.score < 1000 ? 3 : 4;
+
+      // Progression Check: If all words of current maxMorae are mastered, unlock next level
+      // We check levels 2, 3, 4 sequentially.
+      // If we are at level 2, check if all 2-mora words are mastered.
+      // If so, bump to 3. Then check 3. etc.
+      // Cap at 6 (max available in DB).
+
+      for (let m = 2; m <= 6; m++) {
+        if (m < maxMorae) continue; // Already authorized
+        const wordsAtLevel = WORDS.filter(w => w.morae === m);
+        if (wordsAtLevel.length === 0) continue;
+
+        const allMastered = wordsAtLevel.every(w => (wordMastery[w.id] || 0) >= 7);
+        if (allMastered) {
+          maxMorae = Math.max(maxMorae, m + 1);
+        } else {
+          break; // Not mastered this level yet, so don't advance further
+        }
+      }
+
+      // Review Mechanism: 10% chance to pick a Mastered word
+      const doReview = Math.random() < 0.1;
+      let candidates: typeof WORDS = [];
+
+      if (doReview) {
+        candidates = WORDS.filter(w => (wordMastery[w.id] || 0) >= 7);
+      }
+
+      // If no review or no mastered words, build Learning Pool
+      if (candidates.length === 0) {
+        // Candidates: Words with morae <= maxMorae AND Not Mastered
+        const eligible = WORDS.filter(w => w.morae <= maxMorae && (wordMastery[w.id] || 0) < 7);
+
+        // Smart Rotation:
+        // 1. In Progress (0 < mastery < 7)
+        // 2. New (mastery == 0)
+        const inProgress = eligible.filter(w => (wordMastery[w.id] || 0) > 0);
+        const fresh = eligible.filter(w => (wordMastery[w.id] || 0) === 0);
+
+        // Pool Limit = 15
+        // Fill with In Progress first, then Fresh
+        candidates = [...inProgress, ...fresh].slice(0, 15);
+
+        // Fallback: If no eligible words (all mastered?), pick any from current maxMorae
+        if (candidates.length === 0) {
+          candidates = WORDS.filter(w => w.morae <= maxMorae);
+        }
+      }
+
+      list = candidates;
+    } else {
+      list = gameState.mode === 'hiragana'
+        ? HIRAGANA
+        : gameState.mode === 'katakana'
+          ? KATAKANA
+          : [...HIRAGANA, ...KATAKANA];
+    }
 
     const randomEntry = list[Math.floor(Math.random() * list.length)];
     const column = Math.floor(Math.random() * COLUMNS);
 
-    const newKana: KanaCharacter = {
+    const isWord = gameState.mode === 'words';
+    const masteryCount = (isWord && randomEntry.id) ? (wordMastery[randomEntry.id] || 0) : 0;
+    const showKanji = isWord && masteryCount >= 3 && randomEntry.kanji;
+
+    // Determine text to display
+    const textToDisplay = showKanji ? randomEntry.kanji : (isWord ? randomEntry.kana : randomEntry.char);
+
+    // Calculate width in cells
+    // For now, assume 1 char = 1 cell.
+    // If text is "ねこ", length is 2. "猫", length is 1.
+    const chars = textToDisplay.split('');
+    const width = chars.length;
+
+    // Find valid column
+    // Must be between 0 and COLUMNS - width
+    const maxColumn = COLUMNS - width;
+    if (maxColumn < 0) return; // Should not happen if words are short enough
+
+    const startColumn = Math.floor(Math.random() * (maxColumn + 1));
+
+    // Check for collision with existing falling blocks in these columns
+    // Don't spawn if any block is still in the upper portion of the screen
+    const collisionThreshold = CELL_SIZE * 3; // Don't spawn if block is above this Y
+    const columnsNeeded = Array.from({ length: width }, (_, i) => startColumn + i);
+
+    const hasCollision = gameState.activeKana.some(k => {
+      const blockColumn = Math.floor(k.x / CELL_SIZE);
+      return columnsNeeded.includes(blockColumn) && k.y < collisionThreshold;
+    });
+
+    if (hasCollision) return; // Skip spawning this tick
+
+    const wordGroupId = Math.random().toString(36).substr(2, 9);
+    const startY = -CELL_SIZE;
+
+    const newKanaList: KanaCharacter[] = chars.map((char: string, index: number) => ({
       id: Math.random().toString(36).substr(2, 9),
-      char: randomEntry.char,
-      romaji: randomEntry.romaji,
-      type: HIRAGANA.some(h => h.char === randomEntry.char) ? 'hiragana' : 'katakana',
-      x: column * CELL_SIZE,
-      y: -CELL_SIZE,
-      column,
+      char: char,
+      romaji: randomEntry.romaji, // All parts share the full word romaji for input matching
+      type: isWord ? 'word' : (HIRAGANA.some(h => h.char === randomEntry.char) ? 'hiragana' : 'katakana'),
+      x: (startColumn + index) * CELL_SIZE,
+      y: startY,
+      column: startColumn + index,
       isDead: false,
-    };
+      kanji: isWord ? randomEntry.kanji : undefined,
+      en: isWord ? randomEntry.en : undefined,
+      wordId: isWord ? randomEntry.id : undefined,
+      wordGroupId: isWord ? wordGroupId : undefined,
+      wordRomaji: isWord ? randomEntry.romaji : undefined,
+      wordIndex: isWord ? index : undefined,
+      wordLength: isWord ? width : undefined,
+    }));
 
     setGameState(prev => ({
       ...prev,
-      activeKana: [...prev.activeKana, newKana]
+      activeKana: [...prev.activeKana, ...newKanaList]
     }));
-  }, [gameState.mode]);
+  }, [gameState.mode, gameState.activeKana, wordMastery]);
 
   const update = useCallback((time: number) => {
     if (!lastTimeRef.current) {
@@ -189,7 +314,7 @@ const App: React.FC = () => {
     const deltaTime = time - lastTimeRef.current;
     lastTimeRef.current = time;
 
-    if (!gameState.isActive || gameState.isGameOver) return;
+    if (!gameState.isActive || gameState.isGameOver || gameState.isPaused) return;
 
     spawnTimerRef.current += deltaTime;
     // Adaptive Difficulty: Slow down if board is getting full
@@ -214,42 +339,125 @@ const App: React.FC = () => {
 
       let nextSouls = [...prev.souls];
 
-      prev.activeKana.forEach(kana => {
-        const nextY = kana.y + currentSpeed;
-        const columnStack = nextStackedKana.filter(s => s.column === kana.column);
-        const topOfStack = columnStack.length > 0
-          ? Math.min(...columnStack.map(s => s.y))
-          : BOARD_HEIGHT;
+      // Group active kana by wordGroupId (or individual if not part of a group)
+      const groups: Record<string, KanaCharacter[]> = {};
+      prev.activeKana.forEach(k => {
+        const key = k.wordGroupId || k.id;
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(k);
+      });
 
-        if (nextY + CELL_SIZE >= topOfStack) {
-          const frozenY = topOfStack - CELL_SIZE;
-          nextStackedKana.push({ ...kana, y: frozenY });
+      Object.values(groups).forEach(group => {
+        // Calculate next position for the group
+        // If ANY member of the group hits something, the WHOLE group stops.
 
-          // Score Penalty & Soul Creation
-          prev.score = Math.max(0, prev.score - 5);
-          nextSouls.push({
-            id: Math.random().toString(),
-            x: kana.x,
-            y: frozenY,
-            text: kana.romaji
+        let collision = false;
+        let freezeYOffset = 0; // Relative to current Y. 
+
+        // Check collisions for all members
+        for (const kana of group) {
+          const nextY = kana.y + currentSpeed;
+          const columnStack = nextStackedKana.filter(s => s.column === kana.column);
+          const topOfStack = columnStack.length > 0
+            ? Math.min(...columnStack.map(s => s.y))
+            : BOARD_HEIGHT;
+
+          if (nextY + CELL_SIZE >= topOfStack) {
+            collision = true;
+            // We need to stop such that this kana is exactly at topOfStack - CELL_SIZE
+            // The freeze position for this kana is topOfStack - CELL_SIZE.
+            // But we need to keep relative positions of the group (though currently they are all at same Y).
+            // Assuming horizontal group, they share Y.
+            // We align the whole group to the highest collision point implies the group stops 
+            // as soon as the *lowest* clearance is met. 
+            // Actually, if one hits, they all stop at that Y level (aligned).
+
+            // Let's take the Y that causes the collision.
+            // If multiple hit, the one that hit "highest" (smallest Y boundary) dictates the stop?
+            // No, the one that hits FIRST (highest stack) determines the stop Y.
+            // Since they fall together, the one encountering the highest stack will stop the group.
+
+            const targetY = topOfStack - CELL_SIZE;
+            // If this is the first collision detected or this collision forces a higher stop (smaller Y)
+            // wait, smaller Y means higher on screen.
+            // We want to stop at the MINIMUM targetY encountered.
+            // Since we haven't tracked minTargetY, let's do it outside loop if complex,
+            // but basic logic: collision = true.
+            break;
+          }
+        }
+
+        if (collision) {
+          // Re-calculate the exact freeze Y for the group.
+          // It must be the minimum (topOfStack - CELL_SIZE) across all columns occupied by the group.
+          let minTargetY = BOARD_HEIGHT * 2; // High number
+
+          group.forEach(kana => {
+            const columnStack = nextStackedKana.filter(s => s.column === kana.column);
+            const topOfStack = columnStack.length > 0
+              ? Math.min(...columnStack.map(s => s.y))
+              : BOARD_HEIGHT;
+            minTargetY = Math.min(minTargetY, topOfStack - CELL_SIZE);
           });
 
-          const charStat = prev.stats.byCharacter[kana.char] || { correct: 0, missed: 0, char: kana.char, romaji: kana.romaji };
-          charStat.missed += 1;
-          prev.stats.byCharacter[kana.char] = charStat;
+          // Freeze group
+          group.forEach(kana => {
+            nextStackedKana.push({ ...kana, y: minTargetY });
 
-          if (frozenY <= 0) {
+            // Penalty & Soul
+            prev.score = Math.max(0, prev.score - 5);
+
+            // Better Hint Text
+            let soulText = kana.char;
+            if (kana.type === 'word' && kana.wordId) {
+              const w = WORDS.find(word => word.id === kana.wordId);
+              if (w) {
+                soulText = `${w.kanji} (${w.romaji})`;
+              }
+            }
+
+            nextSouls.push({
+              id: Math.random().toString(),
+              x: kana.x,
+              y: minTargetY,
+              text: soulText
+            });
+
+            if (kana.type === 'word' && kana.wordId) {
+              // Update Word Stats (only once per group ideally, but here for every char)
+              // Optimization: check if we already processed this wordGroupId in this tick?
+              // Actually simplest is just update stat.
+              const wWord = WORDS.find(w => w.id === kana.wordId);
+              if (wWord) {
+                const wordStat = prev.stats.byWord[kana.wordId] || {
+                  correct: 0, missed: 0, id: wWord.id, kanji: wWord.kanji, romaji: wWord.romaji, en: wWord.en
+                };
+                // We only want to increment ONCE per word group.
+                // But here we are iterating per character.
+                // Hack: Only increment if this is the first char of the word? Or simple check via separate Set.
+                // Since we are inside `group.forEach`, we can just do it once outside loop?
+                // No, we need access to `prev` state cleanly.
+                // Let's rely on wordIndex === 0 to update stats for the whole word.
+                if (kana.wordIndex === 0) {
+                  wordStat.missed += 1;
+                  prev.stats.byWord[kana.wordId] = wordStat;
+                }
+              }
+            } else {
+              const charStat = prev.stats.byCharacter[kana.char] || { correct: 0, missed: 0, char: kana.char, romaji: kana.romaji };
+              charStat.missed += 1;
+              prev.stats.byCharacter[kana.char] = charStat;
+            }
+          });
+
+          if (minTargetY <= 0) {
             triggeredGameOver = true;
-            // Save history immediately on game over
-            // We need to calculate stats here because the state update hasn't processed 'prev' into 'gameState' yet for external access
-            // But we can use the 'prev' state which is accurate for this frame's determination
-            // However, we can't call setHistory inside setGameState (bad practice/side effect).
-            // We'll set a flag in state or use useEffect. 
-            // Actually, cleanest is to handle it in an effect depending on isGameOver, OR call it here via a timeout ref hack,
-            // OR just rely on the effect hook below.
           }
         } else {
-          nextActiveKana.push({ ...kana, y: nextY });
+          // Move all
+          group.forEach(kana => {
+            nextActiveKana.push({ ...kana, y: kana.y + currentSpeed });
+          });
         }
       });
 
@@ -257,6 +465,68 @@ const App: React.FC = () => {
       // Ideally filtering by time created, but for simplicity we'll just keep the list short or clear in a separate effect if needed.
       // Better: remove souls that exceed a certain age or count to prevent memory leak.
       if (nextSouls.length > 20) nextSouls = nextSouls.slice(nextSouls.length - 20);
+
+      // === GRAVITY for Stacked Blocks ===
+      // Apply gravity to stacked blocks that have empty space below them
+      // Process column by column, from bottom to top
+
+      // Group stacked kana by wordGroupId for group gravity
+      const stackedGroups: Record<string, KanaCharacter[]> = {};
+      nextStackedKana.forEach(k => {
+        const key = k.wordGroupId || k.id;
+        if (!stackedGroups[key]) stackedGroups[key] = [];
+        stackedGroups[key].push(k);
+      });
+
+      // Calculate target Y for each group (they fall together)
+      const updatedStackedKana: KanaCharacter[] = [];
+      const processedGroupIds = new Set<string>();
+
+      // Sort groups by Y position (process from bottom to top)
+      const sortedGroups = Object.entries(stackedGroups).sort((a, b) => {
+        const aMinY = Math.max(...a[1].map(k => k.y));
+        const bMinY = Math.max(...b[1].map(k => k.y));
+        return bMinY - aMinY; // Bottom first (higher Y first)
+      });
+
+      sortedGroups.forEach(([groupId, group]) => {
+        if (processedGroupIds.has(groupId)) return;
+        processedGroupIds.add(groupId);
+
+        // For each column occupied by this group, find the floor/top of already processed blocks
+        let minFallDistance = Infinity;
+
+        group.forEach(kana => {
+          // Find blocks already processed in same column (these are "floor" for this block)
+          const blocksBelow = updatedStackedKana.filter(s =>
+            s.column === kana.column && s.y > kana.y
+          );
+
+          // The floor is either BOARD_HEIGHT or the top of existing blocks
+          const floorY = blocksBelow.length > 0
+            ? Math.min(...blocksBelow.map(s => s.y))
+            : BOARD_HEIGHT;
+
+          // How much can this kana fall?
+          const targetY = floorY - CELL_SIZE;
+          const fallDistance = targetY - kana.y;
+
+          minFallDistance = Math.min(minFallDistance, fallDistance);
+        });
+
+        // Apply fall distance to entire group (move by same amount to stay together)
+        // Use gravity speed (same as falling speed for smoothness)
+        const gravityStep = Math.min(minFallDistance, currentSpeed);
+
+        group.forEach(kana => {
+          updatedStackedKana.push({
+            ...kana,
+            y: kana.y + Math.max(0, gravityStep)
+          });
+        });
+      });
+
+      nextStackedKana = updatedStackedKana;
 
       return {
         ...prev,
@@ -270,7 +540,7 @@ const App: React.FC = () => {
     });
 
     requestRef.current = requestAnimationFrame(update);
-  }, [gameState.isActive, gameState.isGameOver, gameState.score, spawnKana]);
+  }, [gameState.isActive, gameState.isGameOver, gameState.isPaused, gameState.score, spawnKana]);
 
   useEffect(() => {
     if (gameState.isGameOver && !showStats) {
@@ -281,29 +551,96 @@ const App: React.FC = () => {
   }, [gameState.isGameOver, showStats, gameState.score, gameState.stats, saveHistory]);
 
   useEffect(() => {
-    if (gameState.isActive && !gameState.isGameOver) {
+    if (gameState.isActive && !gameState.isGameOver && !gameState.isPaused) {
       requestRef.current = requestAnimationFrame(update);
     }
     return () => {
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
-  }, [gameState.isActive, gameState.isGameOver, update]);
+  }, [gameState.isActive, gameState.isGameOver, gameState.isPaused, update]);
 
   // Abstract input processing to reuse for both keyboard and virtual keyboard
   const processInput = useCallback((val: string) => {
     setInputValue(val);
 
     const allVisible = [...gameState.activeKana, ...gameState.stackedKana];
-    const match = allVisible.find(k => k.romaji === val);
+    // Find generic match (simple char) OR word match
+    // STRICT CHECK: Ensure type matches logic.
+    let match = allVisible.find(k => k.type !== 'word' && k.romaji === val);
+
+    // If no simple match, check for word match (using wordRomaji)
+    // IMPORTANT: Check that val matches the FULL word romaji
+    if (!match) {
+      match = allVisible.find(k => k.type === 'word' && k.wordRomaji === val);
+    }
 
     if (match) {
       // Logic calculation outside setGameState to keep variables in scope
       let newExplosions = [{ id: Math.random().toString(), x: match.x, y: match.y }];
-      let toRemoveIds = new Set<string>([match.id]);
+      let newWordPopups: WordPopup[] = [];
+
+      if (match.type === 'word' && match.kanji && match.en) {
+        newWordPopups.push({
+          id: Math.random().toString(),
+          x: match.x,
+          y: match.y,
+          kanji: match.kanji,
+          en: match.en,
+          romaji: match.romaji
+        });
+
+        // Update Mastery
+        if (match.wordId) {
+          setWordMastery(prev => ({
+            ...prev,
+            [match.wordId!]: (prev[match.wordId!] || 0) + 1
+          }));
+        }
+      }
+
+      let toRemoveIds = new Set<string>();
+      let groupExplosions: Explosion[] = [];
+
+      if (match.wordGroupId) {
+        // If part of a group, explode ALL matching group members
+        const groupMembers = allVisible.filter(k => k.wordGroupId === match!.wordGroupId);
+        groupMembers.forEach(k => {
+          toRemoveIds.add(k.id);
+          groupExplosions.push({ id: Math.random().toString(), x: k.x, y: k.y });
+        });
+        newExplosions = groupExplosions; // Replace the single explosion with group
+      } else {
+        toRemoveIds.add(match.id);
+      }
 
       const isStacked = gameState.stackedKana.some(k => k.id === match.id);
 
-      if (isStacked) {
+      // WORDS MODE: Explode ALL matching words with same wordId (regardless of stacked status)
+      if (match.type === 'word' && match.wordId) {
+        const allMatchingWords = [...gameState.activeKana, ...gameState.stackedKana].filter(
+          k => k.wordId === match.wordId
+        );
+
+        // Group by wordGroupId to process each word instance
+        const matchingGroups = new Set<string>();
+        allMatchingWords.forEach(k => {
+          if (k.wordGroupId) matchingGroups.add(k.wordGroupId);
+        });
+
+        matchingGroups.forEach(groupId => {
+          // Skip the already-matched group
+          if (groupId === match.wordGroupId) return;
+
+          const groupMembers = [...gameState.activeKana, ...gameState.stackedKana].filter(
+            k => k.wordGroupId === groupId
+          );
+          groupMembers.forEach(k => {
+            toRemoveIds.add(k.id);
+            newExplosions.push({ id: Math.random().toString(), x: k.x, y: k.y });
+          });
+        });
+      } else if (isStacked) {
+        // KANA MODE: Explode neighbors (only for stacked blocks)
         const neighbors = [
           { x: match.x, y: match.y - CELL_SIZE },       // Top
           { x: match.x - CELL_SIZE, y: match.y },       // Left
@@ -314,36 +651,78 @@ const App: React.FC = () => {
           return Math.abs(k.x - targetX) < 5 && Math.abs(k.y - targetY) < 5;
         };
 
+        // Track which wordGroupIds we've already processed to avoid duplicates
+        const processedWordGroups = new Set<string>();
+
         gameState.stackedKana.forEach(k => {
           neighbors.forEach(n => {
             if (isNeighbor(k, n.x, n.y)) {
-              toRemoveIds.add(k.id);
-              newExplosions.push({ id: Math.random().toString(), x: k.x, y: k.y });
+              // If neighbor is part of a word group, remove the ENTIRE group
+              if (k.wordGroupId && !processedWordGroups.has(k.wordGroupId)) {
+                processedWordGroups.add(k.wordGroupId);
+                const groupMembers = gameState.stackedKana.filter(
+                  m => m.wordGroupId === k.wordGroupId
+                );
+                groupMembers.forEach(m => {
+                  toRemoveIds.add(m.id);
+                  newExplosions.push({ id: Math.random().toString(), x: m.x, y: m.y });
+                });
+              } else if (!k.wordGroupId) {
+                // Single character (not part of a word)
+                toRemoveIds.add(k.id);
+                newExplosions.push({ id: Math.random().toString(), x: k.x, y: k.y });
+              }
             }
           });
         });
       }
 
       setGameState(prev => {
-        const filteredActive = prev.activeKana.filter(k => k.id !== match.id);
+        const filteredActive = prev.activeKana.filter(k => !toRemoveIds.has(k.id));
         const filteredStacked = prev.stackedKana.filter(k => !toRemoveIds.has(k.id));
 
-        const charStat = prev.stats.byCharacter[match.char] || { correct: 0, missed: 0, char: match.char, romaji: match.romaji };
-        charStat.correct += 1;
+        // Update Stats
+        let newStats = { ...prev.stats };
+
+        if (match.type === 'word' && match.wordId) {
+          const wWord = WORDS.find(w => w.id === match.wordId);
+          if (wWord) {
+            const wordStat = newStats.byWord[match.wordId] || {
+              correct: 0, missed: 0, id: wWord.id, kanji: wWord.kanji, romaji: wWord.romaji, en: wWord.en
+            };
+            wordStat.correct += 1;
+            newStats.byWord[match.wordId] = wordStat;
+          }
+        } else {
+          const charStat = newStats.byCharacter[match.char] || { correct: 0, missed: 0, char: match.char, romaji: match.romaji };
+          charStat.correct += 1;
+          newStats.byCharacter[match.char] = charStat;
+        }
 
         // Play sound
-        speakKana(match.char);
+        if (match.type === 'word' && match.wordId) {
+          const wordDef = WORDS.find(w => w.id === match.wordId);
+          if (wordDef) {
+            speakKana(wordDef.kana);
+          } else {
+            speakKana(match.char);
+          }
+        } else {
+          speakKana(match.char);
+        }
 
         return {
           ...prev,
           activeKana: filteredActive,
           stackedKana: filteredStacked,
           explosions: [...prev.explosions, ...newExplosions],
+          wordPopups: [...prev.wordPopups, ...newWordPopups],
           score: prev.score + 10 + (newExplosions.length - 1) * 5,
           stats: {
             ...prev.stats,
             correct: prev.stats.correct + 1,
-            byCharacter: { ...prev.stats.byCharacter, [match.char]: charStat }
+            byCharacter: newStats.byCharacter,
+            byWord: newStats.byWord
           }
         };
       });
@@ -356,6 +735,15 @@ const App: React.FC = () => {
           explosions: prev.explosions.filter(e => !newExplosions.some(ne => ne.id === e.id))
         }));
       }, 500);
+
+      if (newWordPopups.length > 0) {
+        setTimeout(() => {
+          setGameState(prev => ({
+            ...prev,
+            wordPopups: prev.wordPopups.filter(wp => !newWordPopups.some(nwp => nwp.id === wp.id))
+          }));
+        }, 2000); // 2 seconds for word popups
+      }
     }
   }, [gameState.activeKana, gameState.stackedKana, gameState.stats]); // Added dependencies
 
@@ -374,7 +762,66 @@ const App: React.FC = () => {
   };
 
   const getKanaColor = (type: string) => {
-    return type === 'hiragana' ? 'bg-pink-300 text-pink-900 border-pink-400' : 'bg-blue-300 text-blue-900 border-blue-400';
+    if (type === 'word') return 'bg-purple-300 text-purple-900 border-purple-400 font-bold';
+    return type === 'hiragana' ? 'bg-pink-300 text-pink-900 border-pink-400 text-3xl' : 'bg-blue-300 text-blue-900 border-blue-400 text-3xl';
+  };
+
+  const getKanaStyle = (kana: KanaCharacter) => {
+    const baseStyle: React.CSSProperties = {
+      width: CELL_SIZE - 4,
+      height: CELL_SIZE - 4,
+      left: kana.x + 2,
+      top: kana.y + 2,
+      fontSize: kana.type === 'word' ? (kana.char.length > 4 ? '0.6rem' : '2rem') : undefined,
+    };
+
+    if (kana.type === 'word' && kana.wordLength && kana.wordLength > 1) {
+      // Visual merging logic
+      const idx = kana.wordIndex!;
+      const len = kana.wordLength;
+
+      // Styles to pull characters closer together visually
+      let alignmentStyle: React.CSSProperties = {};
+
+      if (idx === 0) {
+        // First char: remove right border, square right corners
+        // Pull right (end)
+        alignmentStyle = {
+          borderRightWidth: 0,
+          borderTopRightRadius: 0,
+          borderBottomRightRadius: 0,
+          width: CELL_SIZE - 2,
+          paddingRight: 0,
+          justifyContent: 'flex-end',
+          paddingLeft: '10%' // Push away from left edge slightly
+        };
+      } else if (idx === len - 1) {
+        // Last char: remove left border, square left corners
+        // Pull left (start)
+        alignmentStyle = {
+          borderLeftWidth: 0,
+          borderTopLeftRadius: 0,
+          borderBottomLeftRadius: 0,
+          width: CELL_SIZE - 2,
+          left: kana.x,
+          paddingLeft: 0,
+          justifyContent: 'flex-start',
+          paddingRight: '10%' // Push away from right edge slightly
+        };
+      } else {
+        // Middle char: remove both borders, square all corners
+        alignmentStyle = {
+          borderLeftWidth: 0,
+          borderRightWidth: 0,
+          borderRadius: 0,
+          width: CELL_SIZE,
+          left: kana.x
+        };
+      }
+      return { ...baseStyle, ...alignmentStyle };
+    }
+
+    return baseStyle;
   };
 
   return (
@@ -390,7 +837,7 @@ const App: React.FC = () => {
                 KANA POP! <span className="text-2xl">✨</span>
               </h1>
               <div className="flex gap-2 mt-2 items-center">
-                {(['hiragana', 'katakana', 'both'] as KanaMode[]).map(m => (
+                {(['hiragana', 'katakana', 'both', 'words'] as KanaMode[]).map(m => (
                   <button
                     key={m}
                     onClick={() => !gameState.isActive && setGameState(prev => ({ ...prev, mode: m }))}
@@ -466,13 +913,8 @@ const App: React.FC = () => {
               {gameState.activeKana.map(kana => (
                 <div
                   key={kana.id}
-                  className={`absolute flex items-center justify-center text-3xl font-bold rounded-xl border-b-4 transition-transform ${getKanaColor(kana.type)} japanese-font`}
-                  style={{
-                    width: CELL_SIZE - 4,
-                    height: CELL_SIZE - 4,
-                    left: kana.x + 2,
-                    top: kana.y + 2,
-                  }}
+                  className={`absolute flex items-center justify-center font-bold rounded-xl border-b-4 transition-transform ${getKanaColor(kana.type)} japanese-font`}
+                  style={getKanaStyle(kana)}
                 >
                   {kana.char}
                 </div>
@@ -481,17 +923,34 @@ const App: React.FC = () => {
               {gameState.stackedKana.map(kana => (
                 <div
                   key={kana.id}
-                  className={`absolute flex items-center justify-center text-3xl font-bold rounded-xl border-b-4 ${getKanaColor(kana.type)} japanese-font grayscale-[0.3]`}
-                  style={{
-                    width: CELL_SIZE - 4,
-                    height: CELL_SIZE - 4,
-                    left: kana.x + 2,
-                    top: kana.y + 2,
-                  }}
+                  className={`absolute flex items-center justify-center font-bold rounded-xl border-b-4 ${getKanaColor(kana.type)} japanese-font grayscale-[0.3]`}
+                  style={getKanaStyle(kana)}
                 >
                   {kana.char}
                 </div>
               ))}
+
+              {/* Pause Overlay */}
+              {gameState.isPaused && (
+                <div className="absolute inset-0 bg-white/80 backdrop-blur-sm z-40 flex flex-col items-center justify-center">
+                  <div className="text-6xl mb-4">⏸️</div>
+                  <h2 className="text-2xl font-bold text-pink-500 mb-6">PAUSED</h2>
+                  <div className="flex gap-4">
+                    <button
+                      onClick={togglePause}
+                      className="bg-pink-400 hover:bg-pink-500 text-white font-bold px-8 py-3 rounded-xl text-lg shadow-lg transition-transform active:scale-95"
+                    >
+                      ▶️ RESUME
+                    </button>
+                    <button
+                      onClick={stopGame}
+                      className="bg-white border-4 border-pink-200 text-pink-400 hover:text-pink-500 hover:border-pink-300 font-bold px-8 py-3 rounded-xl text-lg transition-all active:scale-95"
+                    >
+                      🛑 END GAME
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {gameState.isGameOver && (
                 <div className="absolute inset-0 bg-white/40 backdrop-blur-sm z-10" />
@@ -520,16 +979,32 @@ const App: React.FC = () => {
               {gameState.souls.map(soul => (
                 <div
                   key={soul.id}
-                  className="absolute flex items-center justify-center font-bold text-pink-300 opacity-0 pointer-events-none animate-float-up"
+                  className="absolute flex items-center justify-center font-bold text-pink-300 opacity-0 pointer-events-none animate-float-up whitespace-nowrap"
                   style={{
                     width: CELL_SIZE,
                     height: CELL_SIZE,
                     left: soul.x + 2,
                     top: soul.y, // Starts at block position
-                    fontSize: '1.5rem',
+                    fontSize: '1rem',
                   }}
                 >
-                  {soul.text}
+                  <span className="bg-white/80 px-2 rounded-md shadow-sm">{soul.text}</span>
+                </div>
+              ))}
+
+              {gameState.wordPopups.map(popup => (
+                <div
+                  key={popup.id}
+                  className="absolute flex flex-col items-center justify-center p-3 rounded-xl bg-white/90 shadow-xl border-2 border-purple-300 z-30 animate-float-up-slow pointer-events-none"
+                  style={{
+                    left: popup.x - 50, // Center roughly
+                    top: popup.y - 50,
+                    minWidth: '180px'
+                  }}
+                >
+                  <div className="text-4xl font-black text-purple-600 mb-1">{popup.kanji}</div>
+                  <div className="text-sm font-bold text-gray-400 uppercase tracking-wider">{popup.romaji}</div>
+                  <div className="text-base font-bold text-purple-400">{popup.en}</div>
                 </div>
               ))}
             </>
@@ -542,12 +1017,24 @@ const App: React.FC = () => {
             type="text"
             value={inputValue}
             onChange={handleInputChange}
-            placeholder={gameState.isActive ? "Type romaji..." : "Press Start!"}
-            disabled={!gameState.isActive}
+            placeholder={gameState.isPaused ? "PAUSED" : (gameState.isActive ? "Type romaji..." : "Press Start!")}
+            disabled={!gameState.isActive || gameState.isPaused}
             readOnly={isMobile} // Custom Mobile keyboard logic
             autoFocus={!isMobile}
             className="flex-1 bg-white border-4 border-pink-200 rounded-2xl px-6 py-4 text-2xl font-bold text-pink-600 placeholder-pink-200 focus:outline-none focus:border-pink-400 transition-colors shadow-inner"
           />
+          {gameState.isActive && (
+            <button
+              onClick={togglePause}
+              className={`border-4 font-bold px-4 py-4 rounded-2xl transition-all active:scale-95 ${gameState.isPaused
+                ? 'bg-pink-400 text-white border-pink-400 hover:bg-pink-500'
+                : 'bg-white text-pink-400 border-pink-200 hover:text-pink-500 hover:border-pink-300'
+                }`}
+              title={gameState.isPaused ? 'Resume' : 'Pause'}
+            >
+              {gameState.isPaused ? '▶️' : '⏸️'}
+            </button>
+          )}
           <button
             onClick={stopGame}
             className="bg-white border-4 border-pink-200 text-pink-400 hover:text-pink-500 hover:border-pink-300 font-bold px-6 py-4 rounded-2xl transition-all active:scale-95"
@@ -559,6 +1046,7 @@ const App: React.FC = () => {
         <div className="mt-4 text-pink-300 text-[10px] font-bold uppercase tracking-widest flex gap-4">
           <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-pink-300" /> Hiragana</span>
           <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-300" /> Katakana</span>
+          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-purple-300" /> Words</span>
         </div>
       </div>
 
@@ -572,6 +1060,7 @@ const App: React.FC = () => {
         <StatsModal
           stats={gameState.stats}
           score={gameState.score}
+          wordMastery={wordMastery}
           onClose={() => setShowStats(false)}
           onRestart={() => startGame(gameState.mode, gameState.difficulty)}
         />
