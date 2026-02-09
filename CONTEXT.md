@@ -88,6 +88,13 @@ KANA POP! is an interactive, Tetris-style web game designed to help users master
 -   **Gravity System**: Stacked blocks automatically fall when space below is cleared.
 -   **Persistence**: Saves game history and SRS data to `localStorage` (auto-migrates from old mastery format).
 
+## Responsive Design
+-   **Adaptive Scaling**: Game automatically scales to fit screen width and height.
+-   **Mobile Detection**: Detects mobile devices (`width < 768px`) for optimized layout.
+-   **Virtual Keyboard Support**: Custom virtual keyboard for mobile input; reserves 160px bottom space.
+-   **Dynamic Spacing**: When width-constrained, extra vertical space is distributed as padding to center content.
+-   **Platform-Specific Origins**: Uses `origin-top` on mobile (anchored above keyboard) and `origin-center` on desktop.
+
 ## Setup & Development
 1.  **Install Dependencies**:
     ```bash
@@ -102,7 +109,6 @@ KANA POP! is an interactive, Tetris-style web game designed to help users master
     -   Connect to Vercel for automatic deployments.
 
 ## Future Development Notes
--   **Mobile Support**: Optimize controls for touch devices (virtual keyboard or buttons).
 -   **Leaderboards**: Global backend-based leaderboards.
 
 ## Utility Scripts

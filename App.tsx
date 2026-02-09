@@ -124,7 +124,7 @@ const App: React.FC = () => {
 
       // On mobile, account for virtual keyboard (~160px)
       const mobile = width < 768;
-      const VIRTUAL_KEYBOARD_HEIGHT = mobile ? 160 : 0;
+      const VIRTUAL_KEYBOARD_HEIGHT = mobile ? 180 : 0;
 
       // Calculate width scale (allow scaling up on mobile to fill width)
       const widthScale = (width - 16) / SAFE_WIDTH;
