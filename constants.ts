@@ -32,10 +32,10 @@ export const BOARD_HEIGHT = 600;
 
 // Speed definitions
 export const SPEED_MULTIPLIERS = {
-  slow: 0.35,
+  slow: 0.7,
   normal: 1.0,
   fast: 2.0
 };
 
 export const SPAWN_INTERVAL_BASE = 3000;
-export const FALL_SPEED_BASE = 1.0;
+export const FALL_SPEED_BASE = 1.5;

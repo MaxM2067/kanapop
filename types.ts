@@ -21,6 +21,7 @@ export interface KanaCharacter {
   wordLength?: number; // Total length of the word (e.g. 2 for ねこ)
   stackedAt?: number; // Counter value when block landed (for SRS confidence calc)
   hintCount?: number; // Number of times user clicked for hint
+  pos?: 'Verb' | 'Noun' | 'Adverb' | 'Adjective' | 'Other'; // Part of speech for color coding
 }
 
 export type WordMastery = Record<string, number>; // wordId -> count (legacy)
@@ -76,6 +77,7 @@ export interface WordPopup {
   en: string;
   romaji: string;
   mnemonic?: string; // User-defined mnemonic rule
+  pos?: 'Verb' | 'Noun' | 'Adverb' | 'Adjective' | 'Other';
 }
 
 export type MnemonicRecord = Record<string, string>; // wordId -> mnemonic text

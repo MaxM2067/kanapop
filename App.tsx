@@ -7,6 +7,7 @@ import { KanaMode, KanaCharacter, GameState, GameStats, Difficulty, GameHistoryI
 import { SRS_INTERVALS, SRS_MAX_LEVEL, MASTERY_THRESHOLD, CONFIDENCE_THRESHOLD_DIFFICULT, CONFIDENCE_THRESHOLD_HESITANT, PROGRESS_CONFIDENT, PROGRESS_HESITANT, PROGRESS_DIFFICULT } from './srs';
 import StatsModal from './components/StatsModal';
 import HistoryPanel from './components/HistoryPanel';
+import MyVocabPanel from './components/MyVocabPanel';
 import VirtualKeyboard from './components/VirtualKeyboard';
 
 const App: React.FC = () => {
@@ -110,6 +111,7 @@ const App: React.FC = () => {
   const [scale, setScale] = useState(1);
   const [isMobile, setIsMobile] = useState(false);
   const [extraPadding, setExtraPadding] = useState(0); // Extra vertical padding for mobile
+  const [isVocabOpen, setIsVocabOpen] = useState(false);
 
   useEffect(() => {
     const handleResize = () => {
@@ -331,25 +333,38 @@ const App: React.FC = () => {
         const wordsAtLevel = WORDS.filter(w => w.morae === m);
         if (wordsAtLevel.length === 0) continue;
 
-        const allMastered = wordsAtLevel.every(w => (wordSRS[w.id]?.level || 0) >= MASTERY_THRESHOLD);
-        if (allMastered) {
+        // Unlock next level if all words at this level are at least "seen" (level > 0)
+        // OR if they are mastered. This prevents being stuck if you have seen everything but simple SRS didn't qualify mastery yet.
+        const unseeenWords = wordsAtLevel.filter(w => (!wordSRS[w.id] || wordSRS[w.id].level === 0));
+
+        if (unseeenWords.length === 0) {
+          // All words seen (or mastered), unlock next level
           maxMorae = Math.max(maxMorae, m + 1);
         } else {
-          break; // Not mastered this level yet, so don't advance further
+          break; // Still have new words to see at this level
         }
       }
 
-      // Review Mechanism: 10% chance to pick a Mastered word
-      const doReview = Math.random() < 0.1;
+      // Review Mechanism: Dynamic chance based on backlog size
+      // Get all words due for review (Mastered + Next Session reached)
+      const dueWords = WORDS.filter(w => {
+        const data = wordSRS[w.id];
+        if (!data) return false;
+        return data.level >= MASTERY_THRESHOLD && data.nextReviewSession <= sessionNumber;
+      });
+
+      let reviewChance = 0;
+      if (dueWords.length > 0) {
+        // Base chance 30%, +5% for each extra word due, capped at 50%
+        reviewChance = Math.min(0.5, 0.3 + (dueWords.length * 0.05));
+      }
+
+      // Roll for review spawn
+      const doReview = Math.random() < reviewChance;
       let candidates: typeof WORDS = [];
 
       if (doReview) {
-        // Pick words due for review OR fully mastered
-        candidates = WORDS.filter(w => {
-          const data = wordSRS[w.id];
-          if (!data) return false;
-          return data.level >= MASTERY_THRESHOLD && data.nextReviewSession <= sessionNumber;
-        });
+        candidates = dueWords;
       }
 
       // If no review or no mastered words due, build Learning Pool
@@ -364,8 +379,17 @@ const App: React.FC = () => {
         const fresh = eligible.filter(w => !wordSRS[w.id] || wordSRS[w.id].level === 0);
 
         // Pool Limit = 15
-        // Fill with In Progress first, then Fresh
-        candidates = [...inProgress, ...fresh].slice(0, 15);
+        // If we have fresh words (e.g. just unlocked level), ensure we mix them in!
+        // Don't let inProgress fill the whole pool.
+        let poolInProgress = inProgress;
+        const MAX_POOL = 15;
+
+        if (fresh.length > 0 && inProgress.length > 10) {
+          // Reserve 5 slots for fresh words
+          poolInProgress = inProgress.slice(0, 10);
+        }
+
+        candidates = [...poolInProgress, ...fresh].slice(0, MAX_POOL);
 
         // Fallback: If no eligible words (all mastered?), pick any from current maxMorae
         if (candidates.length === 0) {
@@ -437,6 +461,7 @@ const App: React.FC = () => {
       wordRomaji: isWord ? randomEntry.romaji : undefined,
       wordIndex: isWord ? index : undefined,
       wordLength: isWord ? width : undefined,
+      pos: isWord ? randomEntry.pos : undefined,
     }));
 
     setGameState(prev => ({
@@ -744,7 +769,8 @@ const App: React.FC = () => {
           kanji: match.kanji,
           en: match.en,
           romaji: match.romaji,
-          mnemonic: match.wordId ? mnemonics[match.wordId] : undefined
+          mnemonic: match.wordId ? mnemonics[match.wordId] : undefined,
+          pos: match.pos
         });
 
         // Update SRS with confidence calculation
@@ -1032,8 +1058,18 @@ const App: React.FC = () => {
     setGameState(prev => ({ ...prev, isPaused: true }));
   };
 
-  const getKanaColor = (type: string) => {
-    if (type === 'word') return 'bg-purple-300 text-purple-900 border-purple-400 font-bold';
+  const getKanaColor = (type: string, pos?: 'Verb' | 'Noun' | 'Adverb' | 'Adjective' | 'Other') => {
+    if (type === 'word') {
+      // Part of speech color coding for words
+      switch (pos) {
+        case 'Verb': return 'bg-orange-400 text-orange-900 border-orange-500 font-bold';
+        case 'Noun': return 'bg-blue-300 text-blue-900 border-blue-400 font-bold';
+        case 'Adverb': return 'bg-violet-300 text-violet-900 border-violet-400 font-bold';
+        case 'Adjective': return 'bg-pink-300 text-pink-900 border-pink-400 font-bold';
+        case 'Other': return 'bg-cyan-300 text-cyan-900 border-cyan-400 font-bold';
+        default: return 'bg-purple-300 text-purple-900 border-purple-400 font-bold';
+      }
+    }
     return type === 'hiragana' ? 'bg-pink-300 text-pink-900 border-pink-400 text-3xl' : 'bg-blue-300 text-blue-900 border-blue-400 text-3xl';
   };
 
@@ -1041,23 +1077,36 @@ const App: React.FC = () => {
   const getStackedBlockColor = (kana: KanaCharacter) => {
     // Only apply to words with stackedAt tracking
     if (kana.type !== 'word' || kana.stackedAt === undefined) {
-      return getKanaColor(kana.type) + ' grayscale-[0.3]';
+      return getKanaColor(kana.type, kana.pos) + ' grayscale-[0.3]';
     }
 
     const blocksAfter = blocksProcessedRef.current - kana.stackedAt;
+
+    // Get faded colors based on part of speech
+    const getFadedColors = (pos?: 'Verb' | 'Noun' | 'Adverb' | 'Adjective' | 'Other') => {
+      switch (pos) {
+        case 'Verb': return { light: 'bg-orange-200 text-orange-700 border-orange-300', faded: 'bg-orange-200 text-orange-600 border-orange-300' };
+        case 'Noun': return { light: 'bg-blue-200 text-blue-700 border-blue-300', faded: 'bg-blue-200 text-blue-600 border-blue-300' };
+        case 'Adverb': return { light: 'bg-violet-200 text-violet-700 border-violet-300', faded: 'bg-violet-200 text-violet-600 border-violet-300' };
+        case 'Adjective': return { light: 'bg-pink-200 text-pink-700 border-pink-300', faded: 'bg-pink-200 text-pink-600 border-pink-300' };
+        case 'Other': return { light: 'bg-cyan-200 text-cyan-700 border-cyan-300', faded: 'bg-cyan-200 text-cyan-600 border-cyan-300' };
+        default: return { light: 'bg-purple-200 text-purple-700 border-purple-300', faded: 'bg-purple-200 text-purple-600 border-purple-300' };
+      }
+    };
+    const colors = getFadedColors(kana.pos);
 
     if (blocksAfter >= CONFIDENCE_THRESHOLD_DIFFICULT) {
       // Difficult - gray
       return 'bg-gray-400 text-gray-700 border-gray-500 font-bold';
     } else if (blocksAfter >= 2) {
-      // Fading - faded purple
-      return 'bg-purple-200 text-purple-600 border-purple-300 font-bold opacity-70';
+      // Fading - faded version of pos color
+      return colors.faded + ' font-bold opacity-70';
     } else if (blocksAfter >= CONFIDENCE_THRESHOLD_HESITANT) {
-      // Hesitant start - lighter purple
-      return 'bg-purple-200 text-purple-700 border-purple-300 font-bold';
+      // Hesitant start - lighter version of pos color
+      return colors.light + ' font-bold';
     }
-    // Just landed - normal
-    return 'bg-purple-300 text-purple-900 border-purple-400 font-bold';
+    // Just landed - use full part-of-speech color
+    return getKanaColor('word', kana.pos);
   };
 
   const getWordHighlightStyle = (kana: KanaCharacter, hoveredId: string | null) => {
@@ -1164,13 +1213,21 @@ const App: React.FC = () => {
       <HistoryPanel history={history} />
 
       <div className={`flex flex-col items-center transition-transform duration-300 ${isMobile ? 'origin-top' : 'origin-center'}`} style={{ transform: `scale(${scale})`, paddingTop: isMobile ? extraPadding : 0 }}>
-        <div className="w-full max-w-[480px] mb-2 px-2">
+        {/* Header Container - matches board width on mobile to ensure alignment, wider on desktop */}
+        <div
+          className="mb-2 px-2"
+          style={{ width: isMobile ? BOARD_WIDTH + 12 : 480 }}
+        >
           <div className="flex justify-between items-end mb-1">
             <div className="flex flex-col">
-              <h1 className="text-3xl md:text-4xl font-black text-pink-500 tracking-tight drop-shadow-sm select-none">
+              <h1 className="text-3xl md:text-4xl font-black text-pink-500 tracking-tight drop-shadow-sm select-none flex items-center gap-2">
                 KANA POP! <span className="text-xl md:text-2xl">✨</span>
+
               </h1>
               <div className="flex gap-1 md:gap-2 mt-1 items-center">
+
+
+
                 {/* Hiragana Toggle */}
                 <button
                   onClick={() => {
@@ -1195,7 +1252,7 @@ const App: React.FC = () => {
                     });
                   }}
                   disabled={gameState.isActive}
-                  className={`px-4 py-2 text-sm font-black rounded-full border-2 transition-all capitalize ${gameState.mode === 'hiragana' || gameState.mode === 'both'
+                  className={`px-4 py-2 text-lg md:text-sm font-black rounded-full border-2 transition-all capitalize ${gameState.mode === 'hiragana' || gameState.mode === 'both'
                     ? 'bg-pink-400 text-white border-pink-400'
                     : 'bg-white text-pink-300 border-pink-100 hover:border-pink-200'
                     } ${gameState.isActive ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
@@ -1222,10 +1279,8 @@ const App: React.FC = () => {
                     });
                   }}
                   disabled={gameState.isActive}
-                  className={`px-4 py-2 text-sm font-black rounded-full border-2 transition-all capitalize ${gameState.mode === 'katakana' || gameState.mode === 'both'
-                    ? 'bg-blue-400 text-white border-blue-400' // Different color for Katakana active state? Or keep pink theme? App uses pink/blue distinction elsewhere.
-                    // Code below uses pink for active. Let's stick to pink for consistency or use blue for Katakana.
-                    // Context: Hiragana=Pink, Katakana=Blue. Let's try to use Blue for Katakana button when active.
+                  className={`px-4 py-2 text-lg md:text-sm font-black rounded-full border-2 transition-all capitalize ${gameState.mode === 'katakana' || gameState.mode === 'both'
+                    ? 'bg-blue-400 text-white border-blue-400'
                     : 'bg-white text-blue-300 border-blue-100 hover:border-blue-200'
                     } ${gameState.isActive ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
                       ${gameState.mode === 'katakana' || gameState.mode === 'both' ? '!bg-blue-400 !border-blue-400 !text-white' : ''}
@@ -1240,7 +1295,7 @@ const App: React.FC = () => {
                 <button
                   onClick={() => !gameState.isActive && setGameState(prev => ({ ...prev, mode: 'words' }))}
                   disabled={gameState.isActive}
-                  className={`px-4 py-2 text-sm font-black rounded-full border-2 transition-all capitalize ${gameState.mode === 'words'
+                  className={`px-4 py-2 text-lg md:text-sm font-black rounded-full border-2 transition-all capitalize ${gameState.mode === 'words'
                     ? 'bg-purple-400 text-white border-purple-400'
                     : 'bg-white text-purple-300 border-purple-100 hover:border-purple-200'
                     } ${gameState.isActive ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
@@ -1249,14 +1304,22 @@ const App: React.FC = () => {
                 </button>
                 <button
                   onClick={() => setAudioEnabled(prev => !prev)}
-                  className={`ml-2 w-8 h-8 text-lg rounded-full ${audioEnabled ? 'bg-pink-100 hover:bg-pink-200 text-pink-500' : 'bg-gray-200 hover:bg-gray-300 text-gray-400'} flex items-center justify-center transition-colors`}
+                  className={`ml-2 w-10 h-10 md:w-8 md:h-8 text-xl md:text-lg rounded-full ${audioEnabled ? 'bg-pink-100 hover:bg-pink-200 text-pink-500' : 'bg-gray-200 hover:bg-gray-300 text-gray-400'} flex items-center justify-center transition-colors`}
                   title={audioEnabled ? 'Sound ON' : 'Sound OFF'}
                 >
                   {audioEnabled ? '🔊' : '🔇'}
                 </button>
               </div>
             </div>
-            <div className="text-right">
+            <div className="text-right flex flex-col items-end">
+              {/* Mobile My Vocab Button (Top Right) */}
+              <button
+                onClick={() => setIsVocabOpen(!isVocabOpen)}
+                className="md:hidden bg-pink-100 ring-2 ring-pink-200 hover:bg-pink-200 text-pink-500 px-4 py-1.5 rounded-full text-lg font-black flex items-center gap-2 transition-all shadow-sm mb-1 whitespace-nowrap"
+              >
+                <span>📚</span> My Vocab
+              </button>
+
               <div className="text-pink-600 text-xs md:text-sm font-bold uppercase tracking-wider mb-[-2px] md:mb-[-4px]">Score</div>
               <div className={`text-4xl md:text-5xl font-black tabular-nums transition-all duration-300 ${scoreHighlight ? 'text-yellow-400 scale-125 drop-shadow-[0_0_10px_rgba(250,204,21,0.8)]' : 'text-pink-500'}`}>
                 {gameState.score}
@@ -1291,22 +1354,55 @@ const App: React.FC = () => {
 
               {gameState.activeKana.map(kana => {
                 const hl = getWordHighlightStyle(kana, hoveredWordGroupId);
+                const srsProgress = kana.type === 'word' && kana.wordId ? wordSRS[kana.wordId]?.progress || 0 : 0;
+                const getProgressBarColor = (pos?: 'Verb' | 'Noun' | 'Adverb' | 'Adjective' | 'Other') => {
+                  switch (pos) {
+                    case 'Verb': return 'bg-orange-600';
+                    case 'Noun': return 'bg-blue-500';
+                    case 'Adverb': return 'bg-violet-500';
+                    case 'Adjective': return 'bg-pink-500';
+                    case 'Other': return 'bg-cyan-500';
+                    default: return 'bg-purple-500';
+                  }
+                };
                 return (
                   <div
                     key={kana.id}
-                    className={`absolute flex items-center justify-center font-bold rounded-xl border-b-4 transition-transform ${getKanaColor(kana.type)} japanese-font ${kana.type === 'word' ? 'cursor-pointer' : ''} ${hl.className}`}
+                    className={`absolute flex items-center justify-center font-bold rounded-xl border-b-4 transition-transform ${getKanaColor(kana.type, kana.pos)} japanese-font ${kana.type === 'word' ? 'cursor-pointer' : ''} ${hl.className}`}
                     style={{ ...getKanaStyle(kana), ...hl.style }}
                     onClick={() => kana.type === 'word' && handleWordClick(kana)}
                     onMouseEnter={() => kana.type === 'word' && kana.wordGroupId && setHoveredWordGroupId(kana.wordGroupId)}
                     onMouseLeave={() => setHoveredWordGroupId(null)}
                   >
                     {kana.char}
+                    {/* SRS Progress Bar - in the bottom border */}
+                    {kana.type === 'word' && kana.wordIndex === 0 && (
+                      <div
+                        className="absolute -bottom-[3px] left-[2px] right-[2px] h-[3px] overflow-hidden rounded-b-lg z-10"
+                      >
+                        <div
+                          className={`h-full ${getProgressBarColor(kana.pos)} transition-all duration-300`}
+                          style={{ width: `${srsProgress * 100}%` }}
+                        />
+                      </div>
+                    )}
                   </div>
                 );
               })}
 
               {gameState.stackedKana.map(kana => {
                 const hl = getWordHighlightStyle(kana, hoveredWordGroupId);
+                const srsProgress = kana.type === 'word' && kana.wordId ? wordSRS[kana.wordId]?.progress || 0 : 0;
+                const getProgressBarColor = (pos?: 'Verb' | 'Noun' | 'Adverb' | 'Adjective' | 'Other') => {
+                  switch (pos) {
+                    case 'Verb': return 'bg-orange-600';
+                    case 'Noun': return 'bg-blue-500';
+                    case 'Adverb': return 'bg-violet-500';
+                    case 'Adjective': return 'bg-pink-500';
+                    case 'Other': return 'bg-cyan-500';
+                    default: return 'bg-purple-500';
+                  }
+                };
                 return (
                   <div
                     key={kana.id}
@@ -1317,6 +1413,17 @@ const App: React.FC = () => {
                     onMouseLeave={() => setHoveredWordGroupId(null)}
                   >
                     {kana.char}
+                    {/* SRS Progress Bar - in the bottom border */}
+                    {kana.type === 'word' && kana.wordIndex === 0 && (
+                      <div
+                        className="absolute -bottom-[3px] left-[2px] right-[2px] h-[3px] overflow-hidden rounded-b-lg z-10"
+                      >
+                        <div
+                          className={`h-full ${getProgressBarColor(kana.pos)} transition-all duration-300`}
+                          style={{ width: `${srsProgress * 100}%` }}
+                        />
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -1411,10 +1518,22 @@ const App: React.FC = () => {
                   top = popup.y + CELL_SIZE + 10;
                 }
 
+                const getPopupColors = (pos?: string) => {
+                  switch (pos) {
+                    case 'Verb': return { border: 'border-orange-500', textStrong: 'text-orange-700', text: 'text-orange-600' };
+                    case 'Noun': return { border: 'border-blue-400', textStrong: 'text-blue-700', text: 'text-blue-500' };
+                    case 'Adverb': return { border: 'border-violet-400', textStrong: 'text-violet-700', text: 'text-violet-500' };
+                    case 'Adjective': return { border: 'border-pink-400', textStrong: 'text-pink-700', text: 'text-pink-500' };
+                    case 'Other': return { border: 'border-cyan-400', textStrong: 'text-cyan-700', text: 'text-cyan-500' };
+                    default: return { border: 'border-purple-300', textStrong: 'text-purple-600', text: 'text-purple-400' };
+                  }
+                };
+                const colors = getPopupColors(popup.pos);
+
                 return (
                   <div
                     key={popup.id}
-                    className="absolute flex flex-col items-center justify-center p-3 rounded-xl bg-white/90 shadow-xl border-2 border-purple-300 z-30 animate-float-up-slow pointer-events-none"
+                    className={`absolute flex flex-col items-center justify-center p-3 rounded-xl bg-white/90 shadow-xl border-2 ${colors.border} z-30 animate-float-up-slow pointer-events-none`}
                     style={{
                       left: left,
                       top: top,
@@ -1422,9 +1541,9 @@ const App: React.FC = () => {
                       minWidth: 'unset'
                     }}
                   >
-                    <div className="text-4xl font-black text-purple-600 mb-1">{popup.kanji}</div>
+                    <div className={`text-4xl font-black ${colors.textStrong} mb-1`}>{popup.kanji}</div>
                     <div className="text-sm font-bold text-gray-400 uppercase tracking-wider">{popup.romaji}</div>
-                    <div className="text-base font-bold text-purple-400 text-center leading-tight">{popup.en}</div>
+                    <div className={`text-base font-bold ${colors.text} text-center leading-tight`}>{popup.en}</div>
                     {popup.mnemonic && (
                       <div className="mt-2 text-xs font-medium text-pink-600 bg-pink-50 px-2 py-1 rounded-lg text-center border border-pink-100 max-w-full break-words">
                         {popup.mnemonic}
@@ -1457,25 +1576,7 @@ const App: React.FC = () => {
                   </div>
                 );
               })}
-              {editingWord && (
-                <MnemonicModal
-                  wordId={editingWord.wordId}
-                  initialMnemonic={mnemonics[editingWord.wordId] || ''}
-                  x={editingWord.x}
-                  y={editingWord.y}
-                  onSave={(id, text) => {
-                    setMnemonics(prev => ({ ...prev, [id]: text }));
-                    setEditingWord(null);
-                    setGameState(prev => ({ ...prev, isPaused: false }));
-                    setTimeout(() => inputRef.current?.focus(), 0);
-                  }}
-                  onClose={() => {
-                    setEditingWord(null);
-                    setGameState(prev => ({ ...prev, isPaused: false }));
-                    setTimeout(() => inputRef.current?.focus(), 0);
-                  }}
-                />
-              )}
+
             </>
           )}
         </div>
@@ -1586,6 +1687,38 @@ const App: React.FC = () => {
           onRestart={() => startGame(gameState.mode, gameState.difficulty)}
         />
       )}
+      <MyVocabPanel
+        isOpen={isVocabOpen}
+        onClose={() => setIsVocabOpen(false)}
+        onToggle={() => setIsVocabOpen(prev => !prev)}
+        wordSRS={wordSRS}
+        mnemonics={mnemonics}
+        currentSession={sessionNumber}
+        onEditMnemonic={(word) => {
+          setEditingWord({ wordId: word.id, x: window.innerWidth / 2, y: window.innerHeight / 2 });
+          setGameState(prev => ({ ...prev, isPaused: true }));
+        }}
+      />
+
+      {editingWord && (
+        <MnemonicModal
+          wordId={editingWord.wordId}
+          initialMnemonic={mnemonics[editingWord.wordId] || ''}
+          x={editingWord.x}
+          y={editingWord.y}
+          onSave={(id, text) => {
+            setMnemonics(prev => ({ ...prev, [id]: text }));
+            setEditingWord(null);
+            setGameState(prev => ({ ...prev, isPaused: false }));
+            setTimeout(() => inputRef.current?.focus(), 0);
+          }}
+          onClose={() => {
+            setEditingWord(null);
+            setGameState(prev => ({ ...prev, isPaused: false }));
+            setTimeout(() => inputRef.current?.focus(), 0);
+          }}
+        />
+      )}
     </div>
   );
 };
@@ -1606,7 +1739,7 @@ const MnemonicModal: React.FC<{
   if (!word) return null;
 
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
+    <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
       <div
         className="bg-white rounded-2xl shadow-2xl p-6 w-[320px] max-w-full mx-4 transform transition-all"
         onClick={e => e.stopPropagation()}

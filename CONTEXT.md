@@ -34,8 +34,16 @@ KANA POP! is an interactive, Tetris-style web game designed to help users master
     -   **History Panel**: Persistent sidebar (local storage) tracking date, score, and accuracy of past games.
 6.  **"Words" Mode**:
     -   **Falling Words**: Words fall as horizontal blocks (grouped by `wordGroupId`).
+    -   **Part of Speech Color Coding**: Words are visually distinct based on grammar:
+        -   **Verbs**: Reddish-Orange (Action)
+        -   **Nouns**: Blue (Objects/People)
+        -   **Adverbs**: Violet (Modifiers)
+        -   **Adjectives**: Pink (Descriptors)
+        -   **Other**: Cyan (Greetings/Pronouns)
     -   **Morae-based Progression**: Difficulty scales by number of Morae (e.g., 2 morae -> 3 morae).
-    -   **Smart Rotation**: Words are introduced in batches of ~15.
+        -   **Progression Trigger**: Unlocks next level as soon as all words in current level are **seen** (Level > 0).
+    -   **Smart Rotation**:
+        -   **Fresh Mixing**: Guarantees new words are mixed in (max 10 old words per session) to maintain learning tempo.
     -   **SRS (Spaced Repetition System)**:
         -   **Confidence Levels**: Confident (⭐ air catch), Hesitant (short floor time), Difficult (long floor time/hints used).
         -   **Progress System**: Confidence determines SRS level progress (0.5 for confident, 0.25 for hesitant, 0 for difficult).
@@ -49,6 +57,8 @@ KANA POP! is an interactive, Tetris-style web game designed to help users master
         -   **Auto-Display**: Mnemonics appear in the success popup when a word is answered correctly.
         -   **Smart Interaction**: Spacebar Pause is disabled while typing in the Editor.
     -   **Visual Feedback**:
+        -   **SRS Progress Bar**: A small, rounded bar at the bottom of each word block showing mastery progress.
+        -   **Color-coded Hints**: Success popups match the Part-of-Speech color of the word.
         -   **Unified Word Highlight**: Hovering over any part of a multi-block word highlights the entire word with a continuous border (no internal dividers).
         -   **Color-coded Blocks**: Stacked blocks fade to gray based on time on floor (~10 blocks for gray).
         -   **Golden Explosions**: ⭐ star explosion when word caught in air (confident).
@@ -70,13 +80,10 @@ KANA POP! is an interactive, Tetris-style web game designed to help users master
 /
 ├── App.tsx               # Main Game Logic (State, Loop, Rendering, Input Handling)
 ├── components/
-│   ├── StatsModal.tsx    # Post-game statistics display
-│   ├── HistoryPanel.tsx  # Sidebar showing past game history
-│   └── VirtualKeyboard.tsx # Mobile virtual keyboard
 ├── constants.ts          # Game constants (Speed, Kana data, Board dimensions)
-├── types.ts              # TypeScript interfaces (GameState, KanaCharacter, WordSRS, etc.)
+├── types.ts              # TypeScript interfaces (GameState, KanaCharacter, WordSRS, WordPopup, etc.)
 ├── srs.ts                # SRS constants (intervals, thresholds, progress values)
-├── words.ts              # Vocabulary database (~430 unique words by romaji)
+├── words.ts              # Vocabulary database (~500 unique words, color-coded by POS)
 ├── vite.config.ts        # Vite configuration
 └── package.json          # Dependencies and scripts
 ```
@@ -112,6 +119,11 @@ KANA POP! is an interactive, Tetris-style web game designed to help users master
 -   **Leaderboards**: Global backend-based leaderboards.
 
 ## Utility Scripts
+-   **add_pos.py**: Python script to auto-classify English definitions into Part of Speech.
+    -   Uses simple heuristics (suffixes, keywords) to assign Verb, Noun, Adverb, Adjective, or Other.
+    -   Updates `words.ts` with `pos` field.
+    -   **Usage**: Run `python3 add_pos.py` to update vocabulary.
+
 -   **reorder_words_v2.py**: A Python script to reorder and format `words.ts`.
     -   Automatically calculates morae count (including small kana handling).
     -   Groups words by mora count.
