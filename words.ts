@@ -14,7 +14,7 @@ export const WORDS: Word[] = [
     { id: 'ki', kana: 'き', romaji: 'ki', kanji: '木', en: 'Tree', morae: 1 },
     { id: 'te', kana: 'て', romaji: 'te', kanji: '手', en: 'Hand', morae: 1 },
     { id: 'me', kana: 'め', romaji: 'me', kanji: '目', en: 'Eye', morae: 1 },
-    { id: 'kyo', kana: 'きょ', romaji: 'kyo', kanji: '今日', en: 'Today', morae: 2 }, // Kyo-u is today (2 morae). Wait, "Today" is Kyou (2). Kyo alone is rare. Let's strictly use Kyou.
+    { id: 'kyo', kana: 'きょう', romaji: 'kyo', kanji: '今日', en: 'Today', morae: 2 }, // Kyo-u is today (2 morae). Wait, "Today" is Kyou (2). Kyo alone is rare. Let's strictly use Kyou.
     // 2 Morae
     { id: 'neko', kana: 'ねこ', romaji: 'neko', kanji: '猫', en: 'Cat', morae: 2 },
     { id: 'inu', kana: 'いぬ', romaji: 'inu', kanji: '犬', en: 'Dog', morae: 2 },

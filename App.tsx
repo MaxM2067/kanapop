@@ -109,24 +109,48 @@ const App: React.FC = () => {
   // Mobile & Scaling State
   const [scale, setScale] = useState(1);
   const [isMobile, setIsMobile] = useState(false);
+  const [extraPadding, setExtraPadding] = useState(0); // Extra vertical padding for mobile
 
   useEffect(() => {
     const handleResize = () => {
       const width = window.innerWidth;
+      const height = window.innerHeight;
 
-      // Determine if mobile based on width
+      // Base dimensions required for the game board + minimal UI
+      // Board Width: ~480px + padding ~40px = 520px
+      // Board Height: 600px + Title/Header (~100px) + Footer/Controls (~80px) + Padding (~40px) = ~820px
+      const SAFE_WIDTH = BOARD_WIDTH + 40;
+      const SAFE_HEIGHT = BOARD_HEIGHT + 220; // Adjusted for comfortable UI space
+
+      // On mobile, account for virtual keyboard (~160px)
       const mobile = width < 768;
-      setIsMobile(mobile);
+      const VIRTUAL_KEYBOARD_HEIGHT = mobile ? 160 : 0;
 
-      // Calculate scale for board
-      // Board width is ~480px + padding + borders. Let's say safe width is 520px.
-      // If screen is smaller than safe width, scale down.
-      if (width < 520) {
-        // Leave some margin
-        const newScale = (width - 32) / (BOARD_WIDTH + 12);
-        setScale(Math.min(1, newScale));
+      // Calculate width scale (allow scaling up on mobile to fill width)
+      const widthScale = (width - 16) / SAFE_WIDTH;
+
+      // Calculate height scale (subtract keyboard height on mobile)
+      const availableHeight = height - VIRTUAL_KEYBOARD_HEIGHT;
+      const heightScale = (availableHeight - 16) / SAFE_HEIGHT;
+
+      // Use the smaller of the two scales to ensure everything fits
+      // On mobile: allow scaling up to fill space (max 1.5 to use available area)
+      // On desktop: cap at 1.0 for normal appearance
+      const maxScale = mobile ? 1.5 : 1.0;
+      const newScale = Math.min(widthScale, heightScale, maxScale);
+
+      setIsMobile(mobile);
+      setScale(newScale);
+
+      // Calculate extra vertical padding on mobile when width-constrained
+      if (mobile && widthScale < heightScale) {
+        // How much vertical space is used by scaled content
+        const scaledContentHeight = SAFE_HEIGHT * newScale;
+        // How much space is left
+        const remainingSpace = availableHeight - scaledContentHeight - 32; // 32px for margins
+        setExtraPadding(Math.max(0, remainingSpace / 2)); // Distribute evenly
       } else {
-        setScale(1);
+        setExtraPadding(0);
       }
     };
 
@@ -963,7 +987,7 @@ const App: React.FC = () => {
             byWord: newStats.byWord
           },
           // Freeze the falling/spawning for 2.5 seconds (2500ms)
-          frozenUntil: Date.now() + 1500
+          frozenUntil: Date.now() + 750
         };
       });
       setInputValue(''); // Reset input after match
@@ -1135,18 +1159,18 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen flex flex-col md:flex-row items-center justify-center p-2 md:p-4 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-pink-100 via-pink-50 to-white overflow-hidden fixed inset-0">
+    <div className={`min-h-screen flex flex-col md:flex-row ${isMobile ? 'items-center justify-start pt-2' : 'items-center justify-center'} p-2 md:p-4 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-pink-100 via-pink-50 to-white overflow-hidden fixed inset-0`}>
 
       <HistoryPanel history={history} />
 
-      <div className={`flex flex-col items-center transition-transform duration-300 origin-top`} style={{ transform: `scale(${scale})` }}>
-        <div className="w-full max-w-[480px] mb-4 px-2">
-          <div className="flex justify-between items-end mb-3">
+      <div className={`flex flex-col items-center transition-transform duration-300 ${isMobile ? 'origin-top' : 'origin-center'}`} style={{ transform: `scale(${scale})`, paddingTop: isMobile ? extraPadding : 0 }}>
+        <div className="w-full max-w-[480px] mb-2 px-2">
+          <div className="flex justify-between items-end mb-1">
             <div className="flex flex-col">
-              <h1 className="text-4xl font-black text-pink-500 tracking-tight drop-shadow-sm select-none">
-                KANA POP! <span className="text-2xl">✨</span>
+              <h1 className="text-3xl md:text-4xl font-black text-pink-500 tracking-tight drop-shadow-sm select-none">
+                KANA POP! <span className="text-xl md:text-2xl">✨</span>
               </h1>
-              <div className="flex gap-2 mt-2 items-center">
+              <div className="flex gap-1 md:gap-2 mt-1 items-center">
                 {/* Hiragana Toggle */}
                 <button
                   onClick={() => {
@@ -1233,8 +1257,8 @@ const App: React.FC = () => {
               </div>
             </div>
             <div className="text-right">
-              <div className="text-pink-600 text-sm font-bold uppercase tracking-wider mb-[-4px]">Score</div>
-              <div className={`text-5xl font-black tabular-nums transition-all duration-300 ${scoreHighlight ? 'text-yellow-400 scale-125 drop-shadow-[0_0_10px_rgba(250,204,21,0.8)]' : 'text-pink-500'}`}>
+              <div className="text-pink-600 text-xs md:text-sm font-bold uppercase tracking-wider mb-[-2px] md:mb-[-4px]">Score</div>
+              <div className={`text-4xl md:text-5xl font-black tabular-nums transition-all duration-300 ${scoreHighlight ? 'text-yellow-400 scale-125 drop-shadow-[0_0_10px_rgba(250,204,21,0.8)]' : 'text-pink-500'}`}>
                 {gameState.score}
               </div>
             </div>
@@ -1456,7 +1480,7 @@ const App: React.FC = () => {
           )}
         </div>
 
-        <div className="mt-6 w-full max-w-[480px] flex gap-1 md:gap-2 px-2">
+        <div className="mt-2 w-full max-w-[480px] flex gap-1 md:gap-2 px-2">
           {/* Freeze Ability Button */}
           {gameState.isActive && !gameState.isGameOver && (
             <button
@@ -1540,7 +1564,7 @@ const App: React.FC = () => {
           </button>
         </div>
 
-        <div className="mt-4 text-pink-300 text-[10px] font-bold uppercase tracking-widest hidden md:flex gap-4">
+        <div className="mt-2 text-pink-300 text-[10px] font-bold uppercase tracking-widest hidden md:flex gap-4">
           <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-pink-300" /> Hiragana</span>
           <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-300" /> Katakana</span>
           <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-purple-300" /> Words</span>

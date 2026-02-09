@@ -42,12 +42,14 @@ KANA POP! is an interactive, Tetris-style web game designed to help users master
         -   **6 SRS Levels**: With increasing review intervals (0, 1, 3, 7, 14, 30, 60 sessions).
         -   **Mastery**: Reaching SRS level 6 marks word as "Learned".
         -   **Review**: Mastered words are scheduled for review based on SRS intervals.
-    -   **Click-to-Hint System**:
-        -   **No Auto-Hints**: Words don’t show hints automatically when landing.
-        -   **Click/Tap**: Click stacked word blocks to see hint (漢字 + romaji + English). **(Autofocuses input after click)**.
-        -   **Bright Popups**: Yellow hints visible for 3 seconds.
-        -   **SRS Penalty**: 1-2 hints → hesitant max, 3+ hints → difficult.
+    -   **Mnemonic Rules (MP)**:
+        -   **Custom Mnemonics**: Users can add their own memory aids/notes to any word.
+        -   **Editor Modal**: Click/Tap any word (falling or stacked) to open the Mnemonic Editor.
+        -   **Persistence**: Mnemonics are saved to local storage (`kana-pop-mnemonics`).
+        -   **Auto-Display**: Mnemonics appear in the success popup when a word is answered correctly.
+        -   **Smart Interaction**: Spacebar Pause is disabled while typing in the Editor.
     -   **Visual Feedback**:
+        -   **Unified Word Highlight**: Hovering over any part of a multi-block word highlights the entire word with a continuous border (no internal dividers).
         -   **Color-coded Blocks**: Stacked blocks fade to gray based on time on floor (~10 blocks for gray).
         -   **Golden Explosions**: ⭐ star explosion when word caught in air (confident).
         -   **Strike System**: Visual "Strike X!" popups for consecutive air catches.
@@ -56,10 +58,10 @@ KANA POP! is an interactive, Tetris-style web game designed to help users master
         -   Tracks stats by Word ID (Kanji, Romaji, English).
     -   **Bonuses & Controls**:
         -   **Early Guess Bonus**: x1.5 score multiplier for catching falling words.
-        -   **Falling Delay**: 2.5s pause in falling/spawning after correct guess (thinking time).
+        -   **Falling Delay**: 1.5s pause in falling/spawning after correct guess (thinking time).
         -   **Streak System**: Consecutive air catches increase streak; streak adds bonus points (`Streak * 5`). Resets on floor touch.
-        -   **Spacebar Pause**: Press Space to Pause/Resume (autofocuses input).
-        -   **Freeze Ability**: Active ability (Button ❄️). Costs 150 points. Freezes time for 20 seconds.
+        -   **Spacebar Pause**: Press Space to Pause/Resume (ignored when typing in Editor).
+        -   **Freeze Ability**: Active ability (Button ❄️). Costs 150 points. Freezes time for 10 seconds.
         -   **Persistent Mode**: Remembers last played mode (e.g. Words) on reload.
         -   **Learned Words List**: Displays all SRS level 6 words in Game Over screen.
 
